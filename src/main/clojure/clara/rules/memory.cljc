@@ -101,14 +101,52 @@
   ;; Converts the transient memory to persistent form.
   (to-persistent! [memory]))
 
+#?(:clj
+   (defn remove-first-of-each!
+     "Remove the first instance of each item in the given remove-seq
+      that appears in the collection.  The given collection is updated in
+      place for performance.  This also tracks which items were found and
+      removed.  Returns a the items removed.  This function does so
+      eagerly since the working memories with large numbers of insertions
+      and retractions can cause lazy sequences to become deeply nested."
+     [remove-seq ^java.util.Collection coll]
+     (cond
+
+       ;; There is nothing to remove.
+       (or (empty? remove-seq) (nil? coll) (.isEmpty coll)) []
+
+       ;; Optimization for special case of one item to remove,
+       ;; which occurs frequently.
+       (= 1 (count remove-seq))
+       (let [to-remove (first remove-seq)]
+         (if (.remove coll to-remove)
+           [to-remove]
+           []))
+             
+       ;; Otherwise, perform a linear search for items to remove.
+       :else
+       (let [removed (java.util.LinkedList.)]
+         (loop [to-remove (first remove-seq)
+                remove-seq (next remove-seq)
+                removed (transient [])]
+           (if to-remove
+             (recur (first remove-seq)
+                    (next remove-seq)
+                    (if (.remove coll to-remove) ; Note: modifies coll in place if found.
+                      (conj! removed to-remove)
+                      removed))
+             ;; If this is expensive, using a mutable collection maybe good to
+             ;; consider here in a future optimization.
+             (persistent! removed)))))))
+
 (defn remove-first-of-each
   "Remove the first instance of each item in the given remove-seq that
-  appears in the collection.  This also tracks which items were found
-  and removed.  Returns a tuple of the form:
-  [items-removed coll-with-items-removed]
-  This function does so eagerly since
-  the working memories with large numbers of insertions and retractions
-  can cause lazy sequences to become deeply nested."
+   appears in the collection.  This also tracks which items were found
+   and removed.  Returns a tuple of the form:
+   [items-removed coll-with-items-removed]
+   This function does so eagerly since
+   the working memories with large numbers of insertions and retractions
+   can cause lazy sequences to become deeply nested."
   [remove-seq coll]
   (cond
 
@@ -159,6 +197,14 @@
                           (conj! result f)])))
 
               [(persistent! items-removed) (persistent! result)]))))
+
+(defn- update-vals [m update-fn]
+  (->> m
+       keys
+       (reduce (fn [m k]
+                 (assoc! m k (update-fn (get m k))))
+               (transient m))
+       persistent!))
 
 (declare ->PersistentLocalMemory)
 
@@ -224,49 +270,96 @@
     (apply concat (vals activation-map)))
 
   ITransientMemory
-  (add-elements! [memory node join-bindings elements]
-    (let [binding-element-map (get alpha-memory (:id node) {})
-          previous-elements (get binding-element-map join-bindings [])]
+  #?(:clj
+      (add-elements! [memory node join-bindings elements]
+                     (let [binding-element-map (get alpha-memory (:id node) {})
+                           previous-elements (get binding-element-map join-bindings)]
 
-      (set! alpha-memory
-            (assoc! alpha-memory
-                    (:id node)
-                    (assoc binding-element-map join-bindings (into previous-elements elements))))))
+                       (cond
+                         previous-elements
+                         (doseq [e elements] (.add ^java.util.Collection previous-elements e))
+
+                         elements
+                         (set! alpha-memory
+                               (assoc! alpha-memory
+                                       (:id node)
+                                       (assoc binding-element-map
+                                              join-bindings
+                                              (java.util.LinkedList. ^java.util.Collection elements)))))))
+      :cljs
+      (add-elements! [memory node join-bindings elements]
+                     (let [binding-element-map (get alpha-memory (:id node) {})
+                           previous-elements (get binding-element-map join-bindings [])]
+
+                       (set! alpha-memory
+                             (assoc! alpha-memory
+                                     (:id node)
+                                     (assoc binding-element-map join-bindings (into previous-elements elements)))))))
 
   (remove-elements! [memory node join-bindings elements]
-    (let [binding-element-map (get alpha-memory (:id node) {})
-          previous-elements (get binding-element-map join-bindings [])
-          [removed-elements filtered-elements] (remove-first-of-each elements previous-elements)]
+    #?(:clj
+       (let [binding-element-map (get alpha-memory (:id node) {})
+             previous-elements (get binding-element-map join-bindings)]
+         ;; Return the removed elements.  remove-first-of-each! won't do
+         ;; anything if there are no previous-elements.
+         (remove-first-of-each! elements previous-elements))
+       :cljs
+       (let [binding-element-map (get alpha-memory (:id node) {})
+             previous-elements (get binding-element-map join-bindings [])
+             [removed-elements filtered-elements] (remove-first-of-each elements previous-elements)]
 
-      (set! alpha-memory
-            (assoc! alpha-memory
-                    (:id node)
-                    (assoc binding-element-map join-bindings filtered-elements)))
+         (set! alpha-memory
+               (assoc! alpha-memory
+                       (:id node)
+                       (assoc binding-element-map join-bindings filtered-elements)))
 
-      ;; Return the removed elements.
-      removed-elements))
+         ;; Return the removed elements.
+         removed-elements)))
 
   (add-tokens! [memory node join-bindings tokens]
-    (let [binding-token-map (get beta-memory (:id node) {})
-          previous-tokens (get binding-token-map join-bindings [])]
+    #?(:clj
+       (let [binding-token-map (get beta-memory (:id node) {})
+             previous-tokens (get binding-token-map join-bindings)]
 
-      (set! beta-memory
-            (assoc! beta-memory
-                    (:id node)
-                    (assoc binding-token-map join-bindings (into previous-tokens tokens))))))
+         (cond
+           previous-tokens
+           (doseq [e tokens] (.add ^java.util.Collection previous-tokens e))
+
+           tokens
+           (set! beta-memory
+                 (assoc! beta-memory
+                         (:id node)
+                         (assoc binding-token-map
+                                join-bindings
+                                (java.util.LinkedList. ^java.util.Collection tokens))))))
+       :cljs
+       (let [binding-token-map (get beta-memory (:id node) {})
+             previous-tokens (get binding-token-map join-bindings [])]
+
+         (set! beta-memory
+               (assoc! beta-memory
+                       (:id node)
+                       (assoc binding-token-map join-bindings (into previous-tokens tokens)))))))
 
   (remove-tokens! [memory node join-bindings tokens]
-    (let [binding-token-map (get beta-memory (:id node) {})
-          previous-tokens (get binding-token-map join-bindings [])
-          [removed-tokens filtered-tokens] (remove-first-of-each tokens previous-tokens)]
+    #?(:clj
+       (let [binding-token-map (get beta-memory (:id node) {})
+             previous-tokens (get binding-token-map join-bindings)]
+         ;; Return the removed tokens.  remove-first-of-each! won't do
+         ;; anything if there are no previous-tokens.
+         (remove-first-of-each! tokens previous-tokens))
+       :cljs
+       (let [binding-token-map (get beta-memory (:id node) {})
+             previous-tokens (get binding-token-map join-bindings [])
+             [removed-tokens filtered-tokens] (remove-first-of-each tokens previous-tokens)]
 
-      (set! beta-memory
-            (assoc! beta-memory
-                    (:id node)
-                    (assoc binding-token-map join-bindings filtered-tokens)))
+         (set! beta-memory
+               (assoc! beta-memory
+                       (:id node)
+                       (assoc binding-token-map join-bindings filtered-tokens)))
 
-      ;; Return the removed tokens.
-      removed-tokens))
+         ;; Return the removed tokens.
+         removed-tokens)))
 
   (add-accum-reduced! [memory node join-bindings accum-result fact-bindings]
 
@@ -330,10 +423,14 @@
         [memory production new-activations]
         (let [activation-group (activation-group-fn production)
               previous (.get activation-map activation-group)]
-          (.put activation-map activation-group
-                (if previous
-                  (into previous new-activations)
-                  new-activations))))
+
+          (cond
+            previous
+            (doseq [a new-activations] (.add ^java.util.Collection previous a))
+
+            new-activations
+            (.put activation-map activation-group
+                  (java.util.LinkedList. ^java.util.Collection new-activations)))))
       :cljs
       (add-activations!
         [memory production new-activations]
@@ -352,13 +449,12 @@
         (when (not (.isEmpty activation-map))
           (let [entry (.firstEntry activation-map)
                 key (.getKey entry)
-                value (.getValue entry)
-                remaining (rest value)]
+                ^java.util.Deque value (.getValue entry)
+                activation (when-not (some-> value .isEmpty) (.remove value))]
 
-            (if (empty? remaining)
-              (.remove activation-map key)
-              (.put activation-map key remaining))
-            (first value))))
+            (when (some-> value .isEmpty)
+              (.remove activation-map key))
+            activation)))
       :cljs
       (pop-activation!
         [memory]
@@ -388,10 +484,9 @@
       (remove-activations!
         [memory production to-remove]
         (let [activation-group (activation-group-fn production)]
-          (.put activation-map
-            activation-group
-                (second (remove-first-of-each to-remove
-                                              (.get activation-map activation-group))))))
+
+          (remove-first-of-each! to-remove
+                                 (.get activation-map activation-group))))
       :cljs
       (remove-activations!
         [memory production to-remove]
@@ -412,17 +507,34 @@
         (set! activation-map (sorted-map-by activation-group-sort-fn))))
 
   (to-persistent! [memory]
-    (->PersistentLocalMemory rulebase
-                             activation-group-sort-fn
-                             activation-group-fn
-                             alphas-fn
-                             (persistent! alpha-memory)
-                             (persistent! beta-memory)
-                             (persistent! accum-memory)
-                             (persistent! production-memory)
-                             (into {}
-                                   (for [[key val] activation-map]
-                                     [key val])))))
+    #?(:clj
+       ;; Be sure to remove all transients and internal mutable collections used
+       ;; in memory.
+       (let [->persistent-coll #(update-vals % vec)]
+         (->PersistentLocalMemory rulebase
+                                  activation-group-sort-fn
+                                  activation-group-fn
+                                  alphas-fn
+                                  (update-vals (persistent! alpha-memory) ->persistent-coll)
+                                  (update-vals (persistent! beta-memory) ->persistent-coll)
+                                  (persistent! accum-memory)
+                                  (persistent! production-memory)
+                                  (into {}
+                                        (for [[key val] activation-map]
+                                          [key (vec val)]))))
+       :cljs
+       (let [vec-vals #(update-vals % vec)]
+         (->PersistentLocalMemory rulebase
+                                  activation-group-sort-fn
+                                  activation-group-fn
+                                  alphas-fn
+                                  (persistent! alpha-memory)
+                                  (persistent! beta-memory)
+                                  (persistent! accum-memory)
+                                  (persistent! production-memory)
+                                  (into {}
+                                        (for [[key val] activation-map]
+                                          [key val])))))))
 
 (defrecord PersistentLocalMemory [rulebase
                                   activation-group-sort-fn
@@ -487,24 +599,37 @@
   IPersistentMemory
   (to-transient [memory]
     #?(:clj
-        (TransientLocalMemory. rulebase
-                               activation-group-sort-fn
-                               activation-group-fn
-                               alphas-fn
-                               (transient alpha-memory)
-                               (transient beta-memory)
-                               (transient accum-memory)
-                               (transient production-memory)
-                               (reduce
+       ;; Turn internal memory structures to Clojure transients and
+       ;; mutable collections.  All operations on transient memory are
+       ;; expected to be from a single thread within a controlled and
+       ;; isolated calling context.  Mutable collections are safe here
+       ;; given this isolation.  We do this to optimize the runtime
+       ;; performance.
+       (let [->mutable-coll (fn [m]
+                              (update-vals m
+                                           #(when %
+                                              (java.util.LinkedList. ^java.util.Collection %))))]
+         (TransientLocalMemory. rulebase
+                                activation-group-sort-fn
+                                activation-group-fn
+                                alphas-fn
+                                (transient (update-vals alpha-memory ->mutable-coll))
+                                (transient (update-vals beta-memory ->mutable-coll))
+                                (transient accum-memory)
+                                (transient production-memory)
+                                (reduce
                                  (fn [^java.util.TreeMap treemap [activation-group activations]]
                                    (let [previous (.get treemap activation-group)]
-                                     (.put treemap activation-group
-                                           (if previous
-                                             (into previous activations)
-                                             activations)))
+                                     (cond
+                                       previous
+                                       (doseq [a activations] (.add ^java.util.Collection previous a))
+
+                                       activations
+                                       (.put treemap activation-group
+                                             (java.util.LinkedList. ^java.util.Collection activations))))
                                    treemap)
                                  (java.util.TreeMap. ^java.util.Comparator activation-group-sort-fn)
-                                 activation-map))
+                                 activation-map)))
         :cljs
         (let [activation-map (reduce
                                (fn [treemap [activation-group activations]]
