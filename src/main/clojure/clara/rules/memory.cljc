@@ -201,7 +201,7 @@
    (defn- update-vals [m update-fn]
      (let [updated (java.util.HashMap. (count m))]
        (doseq [[k v] m]
-         (.put updated k v))
+         (.put updated k (update-fn v)))
        (into {} updated))))
 
 #?(:clj
