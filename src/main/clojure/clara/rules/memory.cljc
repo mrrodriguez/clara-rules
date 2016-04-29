@@ -197,12 +197,23 @@
 
               [(persistent! items-removed) (persistent! result)]))))
 
-(defn- update-vals [m update-fn]
-  (persistent!
-   (reduce (fn [m [k v]]
-             (assoc! m k (update-fn v)))
-           (transient {})
-           m)))
+#?(:clj
+   (defn- update-vals [m update-fn]
+     (let [updated (java.util.HashMap. (count m))]
+       (doseq [[k v] m]
+         (.put updated k v))
+       (into {} updated))))
+
+#?(:clj
+   (defn- tuned-new-linked-list
+     "Creates a new java.util.LinkedList from the coll, but avoids using
+      Collection.addAll() since there is unnecessary overhead in this of
+      calling Collection.toArray() on coll."
+     [coll]
+     (let [l (java.util.LinkedList.)]
+       (doseq [x coll]
+         (.add l x))
+       l)))
 
 (declare ->PersistentLocalMemory)
 
@@ -283,7 +294,7 @@
                                        (:id node)
                                        (assoc binding-element-map
                                               join-bindings
-                                              (java.util.LinkedList. ^java.util.Collection elements)))))))
+                                              (tuned-new-linked-list elements)))))))
       :cljs
       (add-elements! [memory node join-bindings elements]
                      (let [binding-element-map (get alpha-memory (:id node) {})
@@ -329,7 +340,7 @@
                          (:id node)
                          (assoc binding-token-map
                                 join-bindings
-                                (java.util.LinkedList. ^java.util.Collection tokens))))))
+                                (tuned-new-linked-list tokens))))))
        :cljs
        (let [binding-token-map (get beta-memory (:id node) {})
              previous-tokens (get binding-token-map join-bindings [])]
@@ -428,7 +439,7 @@
 
             new-activations
             (.put activation-map activation-group
-                  (java.util.LinkedList. ^java.util.Collection new-activations)))))
+                  (tuned-new-linked-list new-activations)))))
       :cljs
       (add-activations!
         [memory production new-activations]
@@ -508,7 +519,7 @@
     #?(:clj
        ;; Be sure to remove all transients and internal mutable collections used
        ;; in memory.
-       (let [->persistent-coll #(update-vals % vec)]
+       (let [->persistent-coll #(update-vals % seq)]
          (->PersistentLocalMemory rulebase
                                   activation-group-sort-fn
                                   activation-group-fn
@@ -518,21 +529,20 @@
                                   (persistent! accum-memory)
                                   (persistent! production-memory)
                                   (into {}
-                                        (for [[key val] activation-map]
-                                          [key (vec val)]))))
+                                        (map (juxt key (comp seq val)))
+                                        activation-map)))
        :cljs
-       (let [vec-vals #(update-vals % vec)]
-         (->PersistentLocalMemory rulebase
-                                  activation-group-sort-fn
-                                  activation-group-fn
-                                  alphas-fn
-                                  (persistent! alpha-memory)
-                                  (persistent! beta-memory)
-                                  (persistent! accum-memory)
-                                  (persistent! production-memory)
-                                  (into {}
-                                        (for [[key val] activation-map]
-                                          [key val])))))))
+       (->PersistentLocalMemory rulebase
+                                activation-group-sort-fn
+                                activation-group-fn
+                                alphas-fn
+                                (persistent! alpha-memory)
+                                (persistent! beta-memory)
+                                (persistent! accum-memory)
+                                (persistent! production-memory)
+                                (into {}
+                                      (for [[key val] activation-map]
+                                        [key val]))))))
 
 (defrecord PersistentLocalMemory [rulebase
                                   activation-group-sort-fn
@@ -605,8 +615,7 @@
        ;; performance.
        (let [->mutable-coll (fn [m]
                               (update-vals m
-                                           #(when %
-                                              (java.util.LinkedList. ^java.util.Collection %))))]
+                                           #(some-> % tuned-new-linked-list)))]
          (TransientLocalMemory. rulebase
                                 activation-group-sort-fn
                                 activation-group-fn
@@ -620,11 +629,13 @@
                                    (let [previous (.get treemap activation-group)]
                                      (cond
                                        previous
-                                       (doseq [a activations] (.add ^java.util.Collection previous a))
+                                       (doseq [a activations]
+                                         (.add ^java.util.Collection previous a))
 
                                        activations
-                                       (.put treemap activation-group
-                                             (java.util.LinkedList. ^java.util.Collection activations))))
+                                       (.put treemap
+                                             activation-group
+                                             (tuned-new-linked-list activations))))
                                    treemap)
                                  (java.util.TreeMap. ^java.util.Comparator activation-group-sort-fn)
                                  activation-map)))
