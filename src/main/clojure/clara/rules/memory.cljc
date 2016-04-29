@@ -106,7 +106,7 @@
      "Remove the first instance of each item in the given remove-seq
       that appears in the collection.  The given collection is updated in
       place for performance.  This also tracks which items were found and
-      removed.  Returns a the items removed.  This function does so
+      removed.  Returns the items removed.  This function does so
       eagerly since the working memories with large numbers of insertions
       and retractions can cause lazy sequences to become deeply nested."
      [remove-seq ^java.util.Collection coll]
@@ -125,19 +125,18 @@
              
        ;; Otherwise, perform a linear search for items to remove.
        :else
-       (let [removed (java.util.LinkedList.)]
-         (loop [to-remove (first remove-seq)
-                remove-seq (next remove-seq)
-                removed (transient [])]
-           (if to-remove
-             (recur (first remove-seq)
-                    (next remove-seq)
-                    (if (.remove coll to-remove) ; Note: modifies coll in place if found.
-                      (conj! removed to-remove)
-                      removed))
-             ;; If this is expensive, using a mutable collection maybe good to
-             ;; consider here in a future optimization.
-             (persistent! removed)))))))
+       (loop [to-remove (first remove-seq)
+              remove-seq (next remove-seq)
+              removed (transient [])]
+         (if to-remove
+           (recur (first remove-seq)
+                  (next remove-seq)
+                  (if (.remove coll to-remove)
+                    (conj! removed to-remove)
+                    removed))
+           ;; If this is expensive, using a mutable collection maybe good to
+           ;; consider here in a future optimization.
+           (persistent! removed))))))
 
 (defn remove-first-of-each
   "Remove the first instance of each item in the given remove-seq that
@@ -199,12 +198,11 @@
               [(persistent! items-removed) (persistent! result)]))))
 
 (defn- update-vals [m update-fn]
-  (->> m
-       keys
-       (reduce (fn [m k]
-                 (assoc! m k (update-fn (get m k))))
-               (transient m))
-       persistent!))
+  (persistent!
+   (reduce (fn [m [k v]]
+             (assoc! m k (update-fn v)))
+           (transient {})
+           m)))
 
 (declare ->PersistentLocalMemory)
 
@@ -450,9 +448,9 @@
           (let [entry (.firstEntry activation-map)
                 key (.getKey entry)
                 ^java.util.Deque value (.getValue entry)
-                activation (when-not (some-> value .isEmpty) (.remove value))]
+                activation (when-not (.isEmpty value) (.remove value))]
 
-            (when (some-> value .isEmpty)
+            (when (.isEmpty value)
               (.remove activation-map key))
             activation)))
       :cljs
