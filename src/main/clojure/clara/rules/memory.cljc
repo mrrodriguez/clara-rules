@@ -2,7 +2,7 @@
   "This namespace is for internal use and may move in the future.
    Specification and default implementation of working memory"
   (:require [clojure.set :as s]))
-(defmacro dbg [x] `(let [x# ~x] (println '~x) (prn x#) x#))
+
 ;; Activation record used by get-activations and add-activations! below.
 (defrecord Activation [node token])
 
@@ -102,13 +102,6 @@
   (to-persistent! [memory]))
 
 #?(:clj
-   (defn- update-vals [m update-fn]
-     (let [updated (java.util.HashMap. (count m))]
-       (doseq [[k v] m]
-         (.put updated k (update-fn v)))
-       (into {} updated))))
-
-#?(:clj
    (defn- add-all!
      "Adds all items from source to the destination dest collection
       destructively.  Avoids using Collection.addAll() due to unnecessary
@@ -130,12 +123,6 @@
        (add-all! (java.util.LinkedList.) coll))))
 
 #?(:clj
-   (defn- ->persistent-coll [coll]
-     (if (coll? coll)
-       coll
-       (seq coll))))
-
-#?(:clj
    (defn- coll-empty?
      "Returns true if the collection is empty.  Does not call seq due to avoid
       overhead that may cause for non-persistent collection types, e.g.
@@ -145,12 +132,12 @@
 
 #?(:clj
    (defn- remove-first-of-each!
-     "Remove the first instance of each item in the given remove-seq
-      that appears in the collection.  The given collection is updated in
-      place for performance.  This also tracks which items were found and
-      removed.  Returns the items removed.  This function does so
-      eagerly since the working memories with large numbers of insertions
-      and retractions can cause lazy sequences to become deeply nested."
+     "Remove the first instance of each item in the given remove-seq that
+      appears in the collection coll.  coll is updated in place for
+      performance.  This implies that the coll must support the mutable
+      collection interface method Collection.remove(Object).  Returns the
+      items that were found and removed from coll.  For immutable collection
+      removal, use the non-destructive remove-first-of-each defined below."
      [remove-seq ^java.util.Collection coll]
      ;; Optimization for special case of one item to remove,
      ;; which occurs frequently.
@@ -611,13 +598,12 @@
              activations
              (remove-first-of-each! to-remove activations))))
        :cljs
-       (remove-activations! [memory production to-remove]
-        (let [activation-group (activation-group-fn production)]
-          (set! activation-map
-                (assoc activation-map
-                       activation-group
-                       (second (remove-first-of-each to-remove
-                                                     (get activation-map activation-group)))))))))
+       (let [activation-group (activation-group-fn production)]
+         (set! activation-map
+               (assoc activation-map
+                      activation-group
+                      (second (remove-first-of-each to-remove
+                                                    (get activation-map activation-group))))))))
 
   #?(:clj
       (clear-activations!
@@ -633,7 +619,16 @@
        ;; Be sure to remove all transients and internal mutable
        ;; collections used in memory.  Convert any collection that is
        ;; not already a Clojure persistent collection.
-       (let [persistent-vals #(update-vals % ->persistent-coll)]
+       (let [->persistent-coll #(if (coll? %)
+                                  %
+                                  (seq %))
+             update-vals (fn [m update-fn]
+                           (->> m
+                                (reduce-kv (fn [m k v]
+                                             (assoc! m k (update-fn v)))
+                                           (transient m))
+                                persistent!))
+             persistent-vals #(update-vals % ->persistent-coll)]
          (->PersistentLocalMemory rulebase
                                   activation-group-sort-fn
                                   activation-group-fn
@@ -643,7 +638,9 @@
                                   (update-vals (persistent! beta-memory) persistent-vals)
                                   (persistent! accum-memory)
                                   (persistent! production-memory)
-                                  (persistent-vals activation-map)))
+                                  (into {}
+                                        (map (juxt key (comp ->persistent-coll val)))
+                                        activation-map)))
        :cljs
        (->PersistentLocalMemory rulebase
                                 activation-group-sort-fn
