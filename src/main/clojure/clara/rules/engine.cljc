@@ -152,26 +152,34 @@
 (def ^:dynamic *rule-context* nil)
 
 (defn- flush-updates
-  "Flush pending updates in the current session. Returns true if there were some items to flush,
-  false otherwise"
+  "Flush all pending updates in the current session. Returns true if there were
+   some items to flush, false otherwise"
   [current-session]
+  (letfn [(flush-all [current-session flushed-items?]
+            (let [{:keys [rulebase transient-memory transport insertions get-alphas-fn listener]} current-session
+                  pending-updates @(:pending-updates current-session)]
 
-  (let [{:keys [rulebase transient-memory transport insertions get-alphas-fn listener]} current-session
-        pending-updates @(:pending-updates current-session)]
+              ;; Remove the facts here so they are re-inserted if we flush recursively.
+              (reset! (:pending-updates current-session) [])
 
-    ;; Remove the facts here so they are re-inserted if we flush recursively.
-    (reset! (:pending-updates current-session) [])
+              (if (empty? pending-updates)
+                flushed-items?
+                (do
+                  (doseq [partition (partition-by :type pending-updates)
+                          :let [facts (mapcat :facts partition)]
+                          [alpha-roots fact-group] (get-alphas-fn facts)
+                          root alpha-roots]
 
-    (doseq [partition (partition-by :type pending-updates)
-            :let [facts (mapcat :facts partition)]
-            [alpha-roots fact-group] (get-alphas-fn facts)
-            root alpha-roots]
+                    (if (= :insert (:type (first partition)))
+                      (alpha-activate root fact-group transient-memory transport listener)
+                      (alpha-retract root fact-group transient-memory transport listener)))
 
-      (if (= :insert (:type (first partition)))
-        (alpha-activate root fact-group transient-memory transport listener)
-        (alpha-retract root fact-group transient-memory transport listener)))
+                  ;; There may be new :pending-updates due to the flush just
+                  ;; made.  So keep flushing until there are none left.  Items
+                  ;; were flushed though, so flush-items? is now true.
+                  (flush-all current-session true)))))]
 
-    (not (empty? pending-updates))))
+    (flush-all current-session false)))
 
 (defn insert-facts!
   "Place facts in a stateful cache to be inserted into the session 
