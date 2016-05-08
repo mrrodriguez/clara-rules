@@ -2,7 +2,7 @@
   "This namespace is for internal use and may move in the future.
    Specification and default implementation of working memory"
   (:require [clojure.set :as s]))
-
+(defmacro dbgm [x] `(let [x# ~x] (println '~x) (prn x#) x#))
 ;; Activation record used by get-activations and add-activations! below.
 (defrecord Activation [node token])
 
@@ -219,6 +219,45 @@
                           (conj! result f)])))
 
               [(persistent! items-removed) (persistent! result)]))))
+
+(defn- rule-ordered-activation
+  "TODO"
+  [activation]
+  {:activation activation
+   :rule-load-order (or (-> activation
+                            :node
+                            :production
+                            meta
+                            :clara.rules.compiler/rule-load-order)
+                        0)})
+
+#?(:clj
+   (defn- queue-activations!
+     ([^java.util.Queue pq activations]
+      (queue-activations! pq activations true))
+     ([^java.util.Queue pq activations wrap-rule-order?]
+      (if wrap-rule-order?
+        (doseq [act activations]
+          (.add pq (rule-ordered-activation act)))
+        (doseq [act activations]
+          (.add pq act)))
+      pq)))
+
+#?(:clj
+   (defn- ->activation-priority-queue
+     ([activations]
+      (->activation-priority-queue activations true))
+     ([activations wrap-rule-order?]
+      (let [init-cnt (count activations)
+            ;; Init size cannot be zero.  Use default
+            ;; PriorityQueue.DEFAULT_INITIAL_CAPACITY (private) field
+            ;; value if not given.
+            pq (java.util.PriorityQueue. (if (pos? init-cnt) init-cnt 11)
+                                         (fn [x y]
+                                           (compare (:rule-load-order x)
+                                                    (:rule-load-order y))))]
+        (queue-activations! pq activations wrap-rule-order?)))))
+
 
 (declare ->PersistentLocalMemory)
 
@@ -498,18 +537,13 @@
               previous (.get activation-map activation-group)]
           ;; The reasoning here is the same as in add-elements! impl above.
           (cond
-            (coll? previous)
+            previous
+            (queue-activations! previous new-activations)
+
+            (not (coll-empty? new-activations))
             (.put activation-map
                   activation-group
-                  (into previous new-activations))
-            
-            previous
-            (add-all! previous
-                      new-activations)
-
-            new-activations
-            (.put activation-map activation-group
-                  new-activations))))
+                  (->activation-priority-queue new-activations)))))
       :cljs
       (add-activations!
         [memory production new-activations]
@@ -528,31 +562,17 @@
         (when (not (.isEmpty activation-map))
           (let [entry (.firstEntry activation-map)
                 key (.getKey entry)
-                value (.getValue entry)
-                ;; We need to know if this has already been converted to
-                ;; mutable.  The reasoning here is the same as in the
-                ;; case of remove-elements! above.
-                persistent? (coll? value)
-                ^java.util.Deque value (if persistent?
-                                         (->linked-list value)
-                                         value)
+                ^java.util.Queue value (.getValue entry)
                 activation (when-not (.isEmpty value)
                              (.remove value))]
 
-            (cond
-              ;; This activation group is empy now, so remove it from
-              ;; the map entirely.
-              (.isEmpty value)
-              (.remove activation-map key)
+            ;; This activation group is empy now, so remove it from
+            ;; the map entirely.
+            (when (.isEmpty value)
+              (.remove activation-map key))
 
-              ;; We converted to a mutable collection this time, so it
-              ;; needs to be associated to this key in the map now.
-              persistent?
-              (.put activation-map
-                    key
-                    value))
-            
-            activation)))
+            ;; Return the selected activation.
+            (:activation activation))))
       :cljs
       (pop-activation!
         [memory]
@@ -583,20 +603,11 @@
        ;; The reasoning here is the same as remove-elements!
        (when-not (coll-empty? to-remove)
          (let [activation-group (activation-group-fn production)
-               activations (.get activation-map activation-group)]
+               ^java.util.Queue activations (.get activation-map activation-group)]
 
-           (cond
-             (coll-empty? activations)
-             []
-             
-             (coll? activations)
-             (let [remaining-activations (->linked-list activations)
-                   removed-activations (remove-first-of-each! to-remove remaining-activations)]
-               (.put activation-map activation-group remaining-activations)
-               removed-activations)
-
-             activations
-             (remove-first-of-each! to-remove activations))))
+           (when-not (coll-empty? activations)
+             (doseq [r to-remove]
+               (.remove activations (rule-ordered-activation r))))))
        :cljs
        (let [activation-group (activation-group-fn production)]
          (set! activation-map
@@ -724,22 +735,12 @@
                               (transient beta-memory)
                               (transient accum-memory)
                               (transient production-memory)
-                              (reduce
-                               (fn [^java.util.TreeMap treemap [activation-group activations]]
-                                 (let [previous (.get treemap activation-group)]
-                                   (cond
-                                     (and previous activations)
-                                     (.put treemap
-                                           activation-group
-                                           (into previous activations))
-                                     
-                                     activations
-                                     (.put treemap
-                                           activation-group
-                                           activations)))
-                                 treemap)
-                               (java.util.TreeMap. ^java.util.Comparator activation-group-sort-fn)
-                               activation-map))
+                              (let [treemap (java.util.TreeMap. ^java.util.Comparator activation-group-sort-fn)]
+                                (doseq [[activation-group activations] activation-map]
+                                  (.put treemap
+                                        activation-group
+                                        (->activation-priority-queue activations false)))
+                                treemap))
         :cljs
         (let [activation-map (reduce
                                (fn [treemap [activation-group activations]]

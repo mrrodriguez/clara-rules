@@ -1521,12 +1521,16 @@
   ([sources-and-options]
    (let [sources (take-while (complement keyword?) sources-and-options)
          options (apply hash-map (drop-while (complement keyword?) sources-and-options))
-         productions (into #{}
-                           (mapcat
-                            #(if (satisfies? IRuleSource %)
-                               (load-rules %)
-                               %))
-                           sources)] ; Load rules from the source, or just use the input as a seq.
+         productions (->> sources
+                          ;; Load rules from the source, or just use the input as a seq.
+                          (mapcat #(if (satisfies? IRuleSource %)
+                                     (load-rules %)
+                                     %))                                        
+                          (map (fn [n production]
+                                 (vary-meta production assoc ::rule-load-order (or n 0)))
+                               (iterate inc 0))
+                          set)]
+
      (if-let [session (get @session-cache [productions options])]
        session
        (let [session (mk-session* productions options)]
