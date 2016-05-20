@@ -112,9 +112,12 @@
 #?(:clj
    (defn- list-remove!
      "Removes the item, to-remove, from the given list, lst.  If it is found and
-      removed, returns true.  Otherwise returns false.  lst is updated in place
-      for performance.  This implies that the list must support the mutable list
-      interface, namely via the java.util.List.listIterator()."
+      removed, returns true.  Otherwise returns false.  Only removes the first 
+      element in the list that is equal to to-remove.  If others are equal, they
+      will not be removed.  This is similar to java.util.List.remove(Object) 
+      lst is updated in place for performance.  This implies that the list must 
+      support the mutable list interface, namely via the
+      java.util.List.listIterator()."
      [^java.util.List lst to-remove]
      (if-not (coll-empty? lst)
        (let [li (.listIterator lst)]
