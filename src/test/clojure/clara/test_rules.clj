@@ -4174,3 +4174,57 @@
                (query cold-and-windy-query))
            [{:?t false}])
         (str "The minimum temperature should retract back to boolean false for node type " node-type))))     
+
+(deftest test-retract-identical-facts
+  (let [q (dsl/parse-query [] [[?t <- Temperature]])
+        t1 (->Temperature 1 "MCI")
+        t2 (->Temperature 2 "LAX")
+        init (-> (mk-session [q])
+                 (insert t1 t2)
+                 fire-rules)]
+
+    (is (= (frequencies [{:?t t1} {:?t t2}])
+           (frequencies (query init q))))
+
+    (is (= (frequencies [{:?t t2}])
+           (frequencies (-> init
+                            (retract t1)
+                            fire-rules
+                            (query q)))
+           (frequencies (-> init
+                            ;; equal, but not identical to t1
+                            (retract (->Temperature 1 "MCI")) 
+                            fire-rules
+                            (query q)))
+           (frequencies (-> init
+                            ;; Equal facts, one identical
+                            (retract t1
+                                     (->Temperature 1 "MCI"))
+                            fire-rules
+                            (query q)))))))
+
+(definterface Marker)
+(defrecord Type1 [] Marker)
+(defrecord Type2 [] Marker)
+
+(deftest test-retract-diff-types-equal-fields-common-ancestor-type
+  (let [q (dsl/parse-query []
+                           [[?m <- Marker]])
+        init-state (-> (mk-session [q])
+                       (insert (->Type1)
+                               (->Type2))
+                       fire-rules)
+        retract1 (-> init-state
+                     (retract (->Type1))
+                     fire-rules)
+        retract2 (-> retract1
+                     (retract (->Type1))
+                     fire-rules)]
+
+    (is (= (frequencies [{:?m (->Type1)}
+                         {:?m (->Type2)}])
+           (frequencies (query init-state q))))
+
+    (is (= (frequencies [{:?m (->Type2)}])
+           (frequencies (query retract1 q))
+           (frequencies (query retract2 q))))))
