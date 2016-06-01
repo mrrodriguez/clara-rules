@@ -1350,13 +1350,18 @@
                    l/default-listener)
                  get-alphas-fn))
 
-(defn local-memory
-  "Returns a local, in-process working memory."
-  [rulebase transport activation-group-sort-fn activation-group-fn alphas-fn]
-  (let [memory (mem/to-transient (mem/local-memory rulebase activation-group-sort-fn activation-group-fn alphas-fn))]
+(defn init-memory [rulebase memory transport]
+  (let [memory (mem/to-transient memory)]
     (doseq [beta-node (:beta-roots rulebase)]
       (left-activate beta-node {} [empty-token] memory transport l/default-listener))
     (mem/to-persistent! memory)))
+
+(defn local-memory
+  "Returns a local, in-process working memory."
+  [rulebase transport activation-group-sort-fn activation-group-fn alphas-fn]
+  (init-memory rulebase
+               (mem/local-memory rulebase activation-group-sort-fn activation-group-fn alphas-fn)
+               transport))
 
 (defn options->activation-group-sort-fn
   "Given the map of options for a session, construct an activation group sorting

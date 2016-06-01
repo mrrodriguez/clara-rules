@@ -11,13 +11,27 @@
   (:require [clara.rules :refer :all]
             [clara.rules.listener :as l]
             [clara.rules.engine :as eng]
+            [clara.rules.compiler :as com]
             [clara.rules.memory :as mem]
+            [clojure.java.io :as jio]
             [clojure.set :as set]
             [schema.core :as s]
             [schema.macros :as sm])
 
-  (:import [clara.rules.engine ExpressionJoinNode HashJoinNode RootJoinNode Token AccumulateNode ProductionNode]))
-
+  (:import [clara.rules.engine
+            Token
+            ProductionNode
+            QueryNode
+            AlphaNode
+            RootJoinNode
+            HashJoinNode
+            ExpressionJoinNode
+            NegationNode
+            NegationWithJoinFilterNode
+            TestNode
+            AccumulateNode
+            AccumulateWithJoinFilterNode]))
+(defmacro dbgd [x] `(let [x# ~x] (println '~x) (prn x#) x#))
 
 ;; A schema representing a minimal representation of a rule session's state.
 ;; This allows for efficient storage, particularly when serialized with Fressian or a similar format
@@ -157,3 +171,182 @@
         (restore-activations session-state)
         (restore-accum-results session-state)
         (restore-insertions session-state))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; Restoring an entire active session in memory that is able to insert, retract, and fire rule again to obtain new working memory states.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;; Rulebase print-dup impl's.
+
+(def ^:dynamic *node-id->node-cache* nil)
+
+(def ^:dynamic *compile-expr-fn*
+  nil)
+
+(defn- add-node-fn [node fn-key meta-key]
+  (assoc node
+         fn-key
+         (*compile-expr-fn* (:id node) (meta-key (meta node)))))
+
+(defn add-rhs-fn [node]
+  (add-node-fn node :rhs :action-expr))
+
+(defn add-alpha-fn [node]
+  ;; AlphaNode's do not have node :id's right now since they don't
+  ;; have any memory specifically associated with them.
+  (assoc node :activation (com/try-eval (:alpha-node (meta node)))))
+
+(defn add-join-filter-fn [node]
+  (add-node-fn node :join-filter-fn :join-filter-expr))
+
+(defn add-test-fn [node fn-key meta-key]
+  (add-node-fn node :test :test-expr))
+
+(defn add-accumulator [node]
+  (assoc node
+         :accumulator (*compile-expr-fn* (:id node)
+                                         (:accum-expr (meta node)))))
+
+(defn cached-node-builder [node-builder-fn node-build-map]
+  (let [node-id (:id node-build-map)]
+    (or (some-> *node-id->node-cache*
+                deref
+                node-id)
+        (let [node (node-builder-fn node-build-map)]
+          (some-> *node-id->node-cache*
+                  (vswap! assoc node-id node))
+          node))))
+
+(defn node-id->node [node-id]
+  (@*node-id->node-cache* node-id))
+
+(def print-dup-record
+  (get-method print-dup clojure.lang.IRecord))
+
+(defn print-dup-node [node ^java.io.Writer w]
+  (let [node-id (:id node)]
+    (if (@*node-id->node-cache* node-id)
+      (do
+        (.write w "#=(clara.rules.durability/node-id->node ")
+        (print-dup node-id w)
+        (.write w ")"))
+      (do
+        (vswap! *node-id->node-cache* assoc node-id node)
+        (print-dup-record node w)))))
+
+(defn- write-join-filter-node [node-builder-name node ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/add-join-filter-fn ")
+  (print-dup-node (assoc node :join-filter-fn nil) w)
+  (.write w ")"))
+
+(defmethod print-dup ProductionNode [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/add-rhs-fn ")
+  (print-dup-node (assoc o :rhs nil) w)
+  (.write w ")"))
+
+(defmethod print-dup AlphaNode [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/add-alpha-fn ")
+  ;; AlphaNode's do not have an :id
+  (print-dup-record (assoc o :activation nil) w)
+  (.write w ")"))
+
+(defmethod print-dup ExpressionJoinNode [o ^java.io.Writer w]
+  (write-join-filter-node o w))
+
+(defmethod print-dup NegationWithJoinFilterNode [o ^java.io.Writer w]
+  (write-join-filter-node o w))
+
+(defmethod print-dup TestNode [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/add-test-fn ")
+  (print-dup-node (assoc o :test nil) w)
+  (.write w ")"))
+
+(defmethod print-dup AccumulateNode [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/add-accumulator ")
+  (print-dup-node (assoc o :accumulator nil) w)
+  (.write w ")"))
+
+(defmethod print-dup AccumulateWithJoinFilterNode [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn ")
+  (print-dup-node (assoc o :accumulator nil :join-filter-fn nil) w)
+  (.write w "))"))
+
+;;;; Store and restore functions.
+
+(defn store-rulebase-state-to [session out]
+  (let [{:keys [rulebase]} (eng/components session)]
+    (binding [*node-id->node-cache* (volatile! {})
+              *print-meta* true
+              *print-dup* true
+              *out* (jio/writer out)]
+      (pr {:rulebase rulebase})
+      (flush))))
+
+(defn store-session-state-to [session out opts]
+  (let [{:keys [rulebase memory]} (eng/components session)
+        memory-state (select-keys memory
+                                  #{:alpha-memory
+                                    :beta-memory
+                                    :accum-memory
+                                    :production-memory
+                                    :activation-map})
+        to-store (cond-> {:memory memory-state}
+                   (:with-rulebase? opts) (assoc :rulebase rulebase))]
+    (binding [*node-id->node-cache* (volatile! {})
+              *print-meta* true
+              *print-dup* true
+              *out* (jio/writer out)]
+      (pr to-store)
+      (flush))))
+
+(defn restore-rulebase-state-from [in]
+  (binding [*node-id->node-cache* (volatile! {})
+            *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
+    (-> in
+        jio/reader
+        clojure.lang.LineNumberingPushbackReader.
+        ;; One item expected in the stream.  Read it.  Fail if nothing found.
+        read
+        :rulebase)))
+
+(defn restore-session-state-from [in opts]
+  (let [{:keys [base-session listeners transport]} opts
+        session-state (binding [*node-id->node-cache* (volatile! {})
+                                *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
+                        (-> in
+                            jio/reader
+                            clojure.lang.LineNumberingPushbackReader.
+                            ;; One item expected in the stream.  Read it.  Fail if nothing found.
+                            read))
+        ;; The rulebase should either be given from the base-session or found in
+        ;; the restored session-state.
+        rulebase (or (some-> base-session eng/components :rulebase)
+                     (:rulebase session-state))
+        opts (-> opts
+                 (assoc :rulebase rulebase)
+                 ;; Right now activation fns do not serialize.
+                 (update :activation-group-sort-fn
+                         #(eng/options->activation-group-sort-fn {:activation-group-sort-fn %}))
+                 (update :activation-group-fn
+                         #(eng/options->activation-group-fn {:activation-group-fn %}))
+                 ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
+                 (update :get-alphas-fn
+                         #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
+        memory-opts (select-keys opts
+                                 #{:rulebase
+                                   :activation-group-sort-fn
+                                   :activation-group-fn
+                                   :get-alphas-fn})
+        memory (eng/init-memory rulebase
+                                (-> (:memory session-state)
+                                    (merge memory-opts)
+                                    ;; Naming difference for some reason.
+                                    (set/rename-keys {:get-alphas-fn :alphas-fn})
+                                    mem/map->PersistentLocalMemory)
+                                transport)]
+    (eng/assemble {:rulebase rulebase
+                   :memory memory
+                   :transport (or transport (clara.rules.engine.LocalTransport.))
+                   :listeners (or listeners [])
+                   :get-alphas-fn (:get-alphas-fn opts)})))
