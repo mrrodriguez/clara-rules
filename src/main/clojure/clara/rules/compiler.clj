@@ -461,6 +461,8 @@
 
         :test expression
 
+        ;; Note that :exists does not support further nested boolean conditions.
+        ;; It is just syntax sugar over an accumulator.
         :exists expression
 
         ;; Double negation, so just return the expression under the second negation.
@@ -476,7 +478,7 @@
     ;; For all others, recursively process the children.
     (let [children (map to-dnf (rest expression))
           ;; Get all conjunctions, which will not conain any disjunctions since they were processed above.
-          conjunctions (filter #(#{:and :condition :not} (expr-type %)) children)]
+          conjunctions (filter #(#{:and :condition :not :exists} (expr-type %)) children)]
 
       ;; If there is only one child, the and or or operator can simply be eliminated.
       (if (= 1 (count children))
@@ -1546,12 +1548,26 @@
   ([sources-and-options]
    (let [sources (take-while (complement keyword?) sources-and-options)
          options (apply hash-map (drop-while (complement keyword?) sources-and-options))
-         productions (into #{}
-                           (mapcat
-                            #(if (satisfies? IRuleSource %)
-                               (load-rules %)
-                               %))
-                           sources)] ; Load rules from the source, or just use the input as a seq.
+         productions (->> sources
+                          ;; Load rules from the source, or just use the input as a seq.
+                          (mapcat #(if (satisfies? IRuleSource %)
+                                     (load-rules %)
+                                     %))                                        
+                          (map (fn [n production]
+                                 (vary-meta production assoc ::rule-load-order (or n 0)))
+                               (range))
+                          ;; Ensure that we choose the earliest occurrence of a rule for the purpose of rule order.
+                          ;; There are Clojure core functions for distinctness, of course, but none of them seem to guarantee
+                          ;; which instance will be chosen in case of duplicates.
+                          (reduce (fn [previous new-production]
+                                    ;; Contains? is broken for transient sets; see http://dev.clojure.org/jira/browse/CLJ-700
+                                    ;; Since all values in this set should be truthy, we can just use the set as a function instead.
+                                    (if (previous new-production)
+                                      previous
+                                      (conj! previous new-production)))
+                                  (transient #{}))
+                          persistent!)]
+
      (if-let [session (get @session-cache [productions options])]
        session
        (let [session (mk-session* productions options)]
