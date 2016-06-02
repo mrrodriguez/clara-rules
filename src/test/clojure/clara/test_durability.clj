@@ -208,23 +208,26 @@
     
     (.delete tmp)))
 
+;; TODO add more node types - such as negation nodes
 (deftest test-store-to-and-restore-from-session-state
-  (let [session (-> (mk-session [all-colds find-hist] :cache false)
+  (let [unfired (-> (mk-session [all-colds find-hist] :cache false)
                     (insert (->Temperature 50 "MCI")
                             (->Cold 50)
                             (->Cold 10)
-                            (->Cold 20))
-                    fire-rules)
-        orig-results (frequencies (query session find-hist))
+                            (->Cold 20)))
+        fired (fire-rules unfired)
+        orig-results (frequencies (query fired find-hist))
 
         tmp1 (doto (java.io.File/createTempFile "test-session-store-1" "clj")
                .deleteOnExit)
         tmp2 (doto (java.io.File/createTempFile "test-session-store-2" "clj")
+               .deleteOnExit)
+        tmp3 (doto (java.io.File/createTempFile "test-session-store-3" "clj")
                .deleteOnExit)]
 
     (testing ":store-rulebase? true"
       (with-open [out (jio/output-stream tmp1)]
-        (d/store-session-state-to session
+        (d/store-session-state-to fired
                                   out
                                   {:with-rulebase? true}))
 
@@ -236,15 +239,30 @@
 
     (testing ":store-rulebase? false"
       (with-open [out (jio/output-stream tmp2)]
-        (d/store-session-state-to session
+        (d/store-session-state-to fired
                                   out
                                   {:with-rulebase? false}))
       
       (with-open [in (jio/input-stream tmp2)]
         (let [restored (d/restore-session-state-from in
-                                                     {:base-session session})]
+                                                     {:base-session fired})]
           (is (= orig-results
                  (frequencies (query restored find-hist)))))))
 
+    (testing "un-fired session stored, restored, and fired"
+      (with-open [out (jio/output-stream tmp3)]
+        (d/store-session-state-to unfired
+                                  out
+                                  {:with-rulebase? false}))
+      
+      (with-open [in (jio/input-stream tmp3)]
+        (let [restored (d/restore-session-state-from in
+                                                     {:base-session unfired})]
+          (is (= orig-results
+                 (frequencies (-> restored
+                                  fire-rules
+                                  (query find-hist))))))))
+    
     (.delete tmp1)
-    (.delete tmp2)))
+    (.delete tmp2)
+    (.delete tmp3)))

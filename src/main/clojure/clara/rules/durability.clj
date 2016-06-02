@@ -18,7 +18,9 @@
             [schema.core :as s]
             [schema.macros :as sm])
 
-  (:import [clara.rules.engine
+  (:import [clara.rules.memory
+            RuleOrderedActivation]
+           [clara.rules.engine
             Token
             ProductionNode
             QueryNode
@@ -200,7 +202,7 @@
 (defn add-join-filter-fn [node]
   (add-node-fn node :join-filter-fn :join-filter-expr))
 
-(defn add-test-fn [node fn-key meta-key]
+(defn add-test-fn [node]
   (add-node-fn node :test :test-expr))
 
 (defn add-accumulator [node]
@@ -235,7 +237,7 @@
         (vswap! *node-id->node-cache* assoc node-id node)
         (print-dup-record node w)))))
 
-(defn- write-join-filter-node [node-builder-name node ^java.io.Writer w]
+(defn- write-join-filter-node [node ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/add-join-filter-fn ")
   (print-dup-node (assoc node :join-filter-fn nil) w)
   (.write w ")"))
@@ -271,6 +273,15 @@
   (.write w "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn ")
   (print-dup-node (assoc o :accumulator nil :join-filter-fn nil) w)
   (.write w "))"))
+
+(defmethod print-dup RuleOrderedActivation [^RuleOrderedActivation o ^java.io.Writer w]
+  (.write w "#")
+  (.write w (.getName (class o)))
+  (print-dup [(.-node-id o)
+              (.-token o)
+              (.-activation o)
+              (.-rule-load-order o)]
+             w))
 
 ;;;; Store and restore functions.
 
@@ -338,15 +349,24 @@
                                    :activation-group-sort-fn
                                    :activation-group-fn
                                    :get-alphas-fn})
-        memory (eng/init-memory rulebase
-                                (-> (:memory session-state)
-                                    (merge memory-opts)
-                                    ;; Naming difference for some reason.
-                                    (set/rename-keys {:get-alphas-fn :alphas-fn})
-                                    mem/map->PersistentLocalMemory)
-                                transport)]
+        transport (or transport (clara.rules.engine.LocalTransport.))
+        listeners (or listeners [])
+        get-alphas-fn (:get-alphas-fn opts)
+        memory (-> (:memory session-state)
+                   (merge memory-opts)
+                   ;; Naming difference for some reason.
+                   (set/rename-keys {:get-alphas-fn :alphas-fn})
+                   mem/map->PersistentLocalMemory)
+        ;; (eng/init-memory rulebase
+        ;;                  (-> (:memory session-state)
+        ;;                      (merge memory-opts)
+        ;;                      ;; Naming difference for some reason.
+        ;;                      (set/rename-keys {:get-alphas-fn :alphas-fn})
+        ;;                      mem/map->PersistentLocalMemory)
+        ;;                  transport)
+        ]
     (eng/assemble {:rulebase rulebase
                    :memory memory
-                   :transport (or transport (clara.rules.engine.LocalTransport.))
-                   :listeners (or listeners [])
-                   :get-alphas-fn (:get-alphas-fn opts)})))
+                   :transport transport
+                   :listeners listeners
+                   :get-alphas-fn get-alphas-fn})))
