@@ -197,7 +197,7 @@
 (defn add-alpha-fn [node]
   ;; AlphaNode's do not have node :id's right now since they don't
   ;; have any memory specifically associated with them.
-  (assoc node :activation (com/try-eval (:alpha-node (meta node)))))
+  (assoc node :activation (com/try-eval (:alpha-expr (meta node)))))
 
 (defn add-join-filter-fn [node]
   (add-node-fn node :join-filter-fn :join-filter-expr))
@@ -210,42 +210,56 @@
          :accumulator (*compile-expr-fn* (:id node)
                                          (:accum-expr (meta node)))))
 
-(defn cached-node-builder [node-builder-fn node-build-map]
-  (let [node-id (:id node-build-map)]
-    (or (some-> *node-id->node-cache*
-                deref
-                node-id)
-        (let [node (node-builder-fn node-build-map)]
-          (some-> *node-id->node-cache*
-                  (vswap! assoc node-id node))
-          node))))
-
 (defn node-id->node [node-id]
   (@*node-id->node-cache* node-id))
+
+(defn cache-node [node]
+  (if-let [node-id (:id node)]
+    (do
+      (vswap! *node-id->node-cache* assoc node-id node)
+      node)
+    node))
 
 (def print-dup-record
   (get-method print-dup clojure.lang.IRecord))
 
-(defn print-dup-node [node ^java.io.Writer w]
-  (let [node-id (:id node)]
-    (if (@*node-id->node-cache* node-id)
-      (do
-        (.write w "#=(clara.rules.durability/node-id->node ")
-        (print-dup node-id w)
-        (.write w ")"))
-      (do
-        (vswap! *node-id->node-cache* assoc node-id node)
-        (print-dup-record node w)))))
+(defn print-dup-node
+  ([node ^java.io.Writer w]
+   (print-dup-node nil node nil w))
+  ([^String header
+    node
+    ^String footer
+    ^java.io.Writer w]
+   (let [node-id (:id node)]
+     (if (@*node-id->node-cache* node-id)
+       (do
+         (.write w "#=(clara.rules.durability/node-id->node ")
+         (print-dup node-id w)
+         (.write w ")"))
+       (do
+         (cache-node node)
+         (vswap! *node-id->node-cache* assoc node-id node)
+         (.write w "#=(clara.rules.durability/cache-node ")
+         (when header (.write w header))
+         (print-dup-record node w)
+         (when footer (.write w footer))
+         (.write w ")")
+         )))))
 
 (defn- write-join-filter-node [node ^java.io.Writer w]
-  (.write w "#=(clara.rules.durability/add-join-filter-fn ")
-  (print-dup-node (assoc node :join-filter-fn nil) w)
-  (.write w ")"))
+  (print-dup-node "#=(clara.rules.durability/add-join-filter-fn "
+                  (assoc node :join-filter-fn nil)
+                  ")"
+                  w))
 
 (defmethod print-dup ProductionNode [o ^java.io.Writer w]
-  (.write w "#=(clara.rules.durability/add-rhs-fn ")
-  (print-dup-node (assoc o :rhs nil) w)
-  (.write w ")"))
+  (print-dup-node "#=(clara.rules.durability/add-rhs-fn "
+                  (assoc o :rhs nil)
+                  ")"
+                  w))
+
+(defmethod print-dup QueryNode [o ^java.io.Writer w]
+  (print-dup-node o w))
 
 (defmethod print-dup AlphaNode [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/add-alpha-fn ")
@@ -253,26 +267,38 @@
   (print-dup-record (assoc o :activation nil) w)
   (.write w ")"))
 
+(defmethod print-dup RootJoinNode [o ^java.io.Writer w]
+  (print-dup-node o w))
+
+(defmethod print-dup HashJoinNode [o ^java.io.Writer w]
+  (print-dup-node o w))
+
 (defmethod print-dup ExpressionJoinNode [o ^java.io.Writer w]
   (write-join-filter-node o w))
+
+(defmethod print-dup NegationNode [o ^java.io.Writer w]
+  (print-dup-node o w))
 
 (defmethod print-dup NegationWithJoinFilterNode [o ^java.io.Writer w]
   (write-join-filter-node o w))
 
 (defmethod print-dup TestNode [o ^java.io.Writer w]
-  (.write w "#=(clara.rules.durability/add-test-fn ")
-  (print-dup-node (assoc o :test nil) w)
-  (.write w ")"))
+  (print-dup-node "#=(clara.rules.durability/add-test-fn "
+                  (assoc o :test nil)
+                  ")"
+                  w))
 
 (defmethod print-dup AccumulateNode [o ^java.io.Writer w]
-  (.write w "#=(clara.rules.durability/add-accumulator ")
-  (print-dup-node (assoc o :accumulator nil) w)
-  (.write w ")"))
+  (print-dup-node "#=(clara.rules.durability/add-accumulator "
+                  (assoc o :accumulator nil)
+                  ")"
+                  w))
 
 (defmethod print-dup AccumulateWithJoinFilterNode [o ^java.io.Writer w]
-  (.write w "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn ")
-  (print-dup-node (assoc o :accumulator nil :join-filter-fn nil) w)
-  (.write w "))"))
+  (print-dup-node "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn "
+                  (assoc o :accumulator nil :join-filter-fn nil)
+                  "))"
+                  w))
 
 (defmethod print-dup RuleOrderedActivation [^RuleOrderedActivation o ^java.io.Writer w]
   (.write w "#")

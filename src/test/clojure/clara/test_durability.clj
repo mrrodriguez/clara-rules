@@ -11,6 +11,7 @@
   (:import [clara.rules.testfacts
             Temperature
             Cold
+            Hot
             TemperatureHistory]))
 
 (use-fixtures :once schema.test/validate-schemas)
@@ -172,15 +173,32 @@
   =>
   (insert! (->TemperatureHistory (mapv :temperature ?cs))))
 
+(defrule all-hots
+  [Temperature (= ?t temperature)]
+  [?cs <- (acc/all) :from [Hot (= temperature ?t)]]
+  =>
+  (insert! (->TemperatureHistory (mapv :temperature ?cs))))
+
+(defrule hot-or-cold-match
+  [:or
+   [Hot (= ?t temperature)]
+   [Cold (= ?t temperature)]]
+  [Temperature (= ?t temperature)]
+  =>
+  (insert! (->TemperatureHistory [?t])))
+
 (defquery find-hist
   []
   [?his <- TemperatureHistory])
 
+(def durability-sample (mk-session [all-colds all-hots hot-or-cold-match find-hist] :cache false))
+
 (deftest test-store-to-and-restore-from-rulebase-state
-  (let [session (mk-session [all-colds find-hist] :cache false)
-        run-session (fn [session]
+  (let [run-session (fn [session]
                       (-> session
                           (insert (->Temperature 50 "MCI")
+                                  (->Hot 50)
+                                  (->Hot 10)
                                   (->Cold 50)
                                   (->Cold 10)
                                   (->Cold 20))
@@ -188,15 +206,15 @@
                           (query find-hist)
                           frequencies))
         
-        orig-results (run-session session)
+        orig-results (run-session durability-sample)
         tmp (doto (java.io.File/createTempFile "test-rulebase-store" "clj")
               .deleteOnExit)]
 
     (with-open [out (jio/output-stream tmp)]
-      (d/store-rulebase-state-to session out))
+      (d/store-rulebase-state-to durability-sample out))
 
     (with-open [in (jio/input-stream tmp)]
-      (let [{:keys [memory transport listeners get-alphas-fn]} (eng/components session)
+      (let [{:keys [memory transport listeners get-alphas-fn]} (eng/components durability-sample)
             rulebase (d/restore-rulebase-state-from in)
             restored (eng/assemble {:rulebase rulebase ; restored rulebase
                                     :memory memory
@@ -208,10 +226,11 @@
     
     (.delete tmp)))
 
-;; TODO add more node types - such as negation nodes
 (deftest test-store-to-and-restore-from-session-state
-  (let [unfired (-> (mk-session [all-colds find-hist] :cache false)
+  (let [unfired (-> durability-sample
                     (insert (->Temperature 50 "MCI")
+                            (->Hot 50)
+                            (->Hot 10)
                             (->Cold 50)
                             (->Cold 10)
                             (->Cold 20)))
