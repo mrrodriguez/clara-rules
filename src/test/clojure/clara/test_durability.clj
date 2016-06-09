@@ -173,6 +173,7 @@
   =>
   (insert! (->TemperatureHistory (mapv :temperature ?cs))))
 
+;; TODO find out how the mistake on not calling the compiled-accum fn didn't break this.
 (defrule all-hots
   [Temperature (= ?t temperature)]
   [?cs <- (acc/all) :from [Hot (= temperature ?t)]]

@@ -207,8 +207,9 @@
 
 (defn add-accumulator [node]
   (assoc node
-         :accumulator (*compile-expr-fn* (:id node)
-                                         (:accum-expr (meta node)))))
+         :accumulator ((*compile-expr-fn* (:id node)
+                                           (:accum-expr (meta node)))
+                       (:env node))))
 
 (defn node-id->node [node-id]
   (@*node-id->node-cache* node-id))
@@ -309,6 +310,106 @@
               (.-rule-load-order o)]
              w))
 
+;;;; Memory serialization
+
+(defprotocol ISerializer
+  (serialize [this id->facts-map])
+  (deserialize [this fact-map-id]))
+
+(defn identical-distinct
+  "A transducer written like distinct, but with identity based duplicate semantics"
+  [rf]
+  (let [seen (volatile! [])]
+    (fn
+      ([] (rf))
+      ([result] (rf result))
+      ([result input]
+       (if (some #(identical? input %) @seen)
+         result
+         (do (vswap! seen conj input)
+             (rf result input)))))))
+
+(defn find-item-idx [item coll]
+  (let [n (count coll)]
+    (loop [i 0]
+      (when (< i n)
+        (if (identical? item (nth coll i))
+          i
+          (recur (inc i)))))))
+
+(defn compress-alpha-memory [seen amem]
+  (let [compress-elements (fn [elements]
+                            (into []
+                                  (map (fn [element]
+                                         (update element
+                                                 :fact
+                                                 #(if-let [idx (find-item-idx % @seen)]
+                                                    idx
+                                                    (do
+                                                      (vswap! seen conj %)
+                                                      (dec (count @seen)))))))
+                                  elements))
+        compress-bindings-map (fn [bindings-map]
+                                (persistent!
+                                 (reduce-kv (fn [m k v]
+                                              (assoc! m k (compress-elements v)))
+                                            (transient {})
+                                            bindings-map)))]
+    (persistent!
+     (reduce-kv (fn [mem node-id bindings-map]
+                  (assoc! mem
+                          node-id
+                          (compress-bindings-map bindings-map)))
+                (transient {})
+                amem))))
+
+(defn compress-beta-memory [seen bmem]
+  (let [compress-matches (fn [token]
+                           (update token
+                                   :matches
+                                   #(vec
+                                     (for [[fact node-id] %]
+                                       (if-let [idx (find-item-idx fact @seen)]
+                                         [idx node-id]
+                                         (do
+                                           (vswap! seen conj fact)
+                                           [(dec (count @seen)) node-id]))))))
+
+        compress-tokens (fn [tokens]
+                          (into []
+                                (map compress-matches)
+                                tokens))
+        compress-bindings-map (fn [bindings-map]
+                                (persistent!
+                                 (reduce-kv (fn [m k v]
+                                              (assoc! m k (compress-tokens v)))
+                                            (transient {})
+                                            bindings-map)))]
+    (persistent!
+     (reduce-kv (fn [mem node-id bindings-map]
+                  (assoc! mem
+                          node-id
+                          (compress-bindings-map bindings-map)))
+                (transient {})
+                bmem))))
+
+(defn store-memory [serializer memory]
+  (let [amem (:alpha-memory memory)
+        bmem (:beta-memory memory)]
+    ;; (serialize serializer
+    ;;            {:elements elements
+    ;;             :tokens tokens
+    ;;             :accumulations accumulations
+    ;;             :insertions insertions})
+    
+    ;; (-> memory
+    ;;     (update :alpha-memory store-alpha-mem)
+    ;;     (update :beta-memory store-beta-mem)
+    ;;     (update :accum-memory store-accum-mem)
+    ;;     (update :production-memory store-production-mem)
+    ;;     (update :activation-map store-activation-map))
+    ))
+
 ;;;; Store and restore functions.
 
 (defn store-rulebase-state-to [session out]
@@ -382,15 +483,7 @@
                    (merge memory-opts)
                    ;; Naming difference for some reason.
                    (set/rename-keys {:get-alphas-fn :alphas-fn})
-                   mem/map->PersistentLocalMemory)
-        ;; (eng/init-memory rulebase
-        ;;                  (-> (:memory session-state)
-        ;;                      (merge memory-opts)
-        ;;                      ;; Naming difference for some reason.
-        ;;                      (set/rename-keys {:get-alphas-fn :alphas-fn})
-        ;;                      mem/map->PersistentLocalMemory)
-        ;;                  transport)
-        ]
+                   mem/map->PersistentLocalMemory)]
     (eng/assemble {:rulebase rulebase
                    :memory memory
                    :transport transport
