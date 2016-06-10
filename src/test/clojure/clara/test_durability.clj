@@ -106,6 +106,7 @@
 
     ;; Accumulator returns the lowest value.
     (is (= #{{:?t (->Temperature 10 "MCI")}}
+           (set (query session coldest-query))
            (set (query restored-session coldest-query))))))
 
 (deftest test-restore-truth-maintenance

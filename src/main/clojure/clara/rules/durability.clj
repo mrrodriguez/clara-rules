@@ -134,7 +134,7 @@
 
       (eng/right-activate-reduced (id-to-node id)
                                   join-bindings
-                                  [[fact-bindings result]]
+                                  [[fact-bindings (first result)]]
                                   transient-memory
                                   transport
                                   (l/to-transient l/default-listener)))
