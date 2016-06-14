@@ -312,105 +312,202 @@
 
 ;;;; Memory serialization
 
-(defprotocol ISerializer
-  (serialize [this id->facts-map])
-  (deserialize [this fact-map-id]))
-
-(defn identical-distinct
-  "A transducer written like distinct, but with identity based duplicate semantics"
-  [rf]
-  (let [seen (volatile! [])]
-    (fn
-      ([] (rf))
-      ([result] (rf result))
-      ([result input]
-       (if (some #(identical? input %) @seen)
-         result
-         (do (vswap! seen conj input)
-             (rf result input)))))))
+(defrecord MemIdx [idx])
 
 (defn find-item-idx [item coll]
   (let [n (count coll)]
     (loop [i 0]
       (when (< i n)
         (if (identical? item (nth coll i))
-          i
+          (->MemIdx i)
           (recur (inc i)))))))
 
-(defn compress-alpha-memory [seen amem]
-  (let [compress-elements (fn [elements]
-                            (into []
-                                  (map (fn [element]
-                                         (update element
-                                                 :fact
-                                                 #(if-let [idx (find-item-idx % @seen)]
-                                                    idx
-                                                    (do
-                                                      (vswap! seen conj %)
-                                                      (dec (count @seen)))))))
-                                  elements))
-        compress-bindings-map (fn [bindings-map]
-                                (persistent!
-                                 (reduce-kv (fn [m k v]
-                                              (assoc! m k (compress-elements v)))
-                                            (transient {})
-                                            bindings-map)))]
-    (persistent!
-     (reduce-kv (fn [mem node-id bindings-map]
-                  (assoc! mem
-                          node-id
-                          (compress-bindings-map bindings-map)))
-                (transient {})
-                amem))))
+;;; TODO Share from clara.rules.memory?
+;;; TODO is it faster to start from an empty map or from a transient copy of m?
+(defn- update-vals [m update-fn]
+  (->> m
+       (reduce-kv (fn [m k v]
+                    (assoc! m k (update-fn v)))
+                  (transient {}))
+       persistent!))
 
-(defn compress-beta-memory [seen bmem]
-  (let [compress-matches (fn [token]
-                           (update token
-                                   :matches
-                                   #(vec
-                                     (for [[fact node-id] %]
-                                       (if-let [idx (find-item-idx fact @seen)]
-                                         [idx node-id]
-                                         (do
-                                           (vswap! seen conj fact)
-                                           [(dec (count @seen)) node-id]))))))
+(defn- index-bindings [seen bindings]
+  (update-vals bindings
+               #(or (find-item-idx % @seen)
+                    %)))
 
-        compress-tokens (fn [tokens]
-                          (into []
-                                (map compress-matches)
-                                tokens))
-        compress-bindings-map (fn [bindings-map]
-                                (persistent!
-                                 (reduce-kv (fn [m k v]
-                                              (assoc! m k (compress-tokens v)))
-                                            (transient {})
-                                            bindings-map)))]
-    (persistent!
-     (reduce-kv (fn [mem node-id bindings-map]
-                  (assoc! mem
-                          node-id
-                          (compress-bindings-map bindings-map)))
-                (transient {})
-                bmem))))
+(defn- unindex-bindings [indexed bindings]
+  (update-vals bindings
+               #(if (instance? MemIdx %)
+                  (nth indexed (:idx %))
+                  %)))
 
-(defn store-memory [serializer memory]
-  (let [amem (:alpha-memory memory)
-        bmem (:beta-memory memory)]
-    ;; (serialize serializer
-    ;;            {:elements elements
-    ;;             :tokens tokens
-    ;;             :accumulations accumulations
-    ;;             :insertions insertions})
-    
-    ;; (-> memory
-    ;;     (update :alpha-memory store-alpha-mem)
-    ;;     (update :beta-memory store-beta-mem)
-    ;;     (update :accum-memory store-accum-mem)
-    ;;     (update :production-memory store-production-mem)
-    ;;     (update :activation-map store-activation-map))
-    ))
+(defn- find-or-create-mem-idx [seen fact]
+  (or (find-item-idx fact @seen)
+      (do (vswap! seen conj fact)
+          (->MemIdx (dec (count @seen))))))
+
+(defn- index-token [seen token]
+  (-> token
+      (update :matches
+              #(mapv (fn [[fact node-id]]
+                       [(find-or-create-mem-idx seen fact) node-id])
+                     %))
+      (update :bindings
+              #(index-bindings seen %))))
+
+(defn- unindex-token [indexed token]
+  (-> token
+      (update :matches
+              #(vec
+                (for [[idx node-id] %]
+                  [(nth indexed (:idx idx)) node-id])))
+      (update :bindings
+              #(unindex-bindings indexed %))))
+
+(defn- update-alpha-memory-index [index-update-fact-fn
+                                  index-update-bindings-fn
+                                  amem]
+  (let [index-update-elements (fn [elements]
+                                (mapv #(-> %
+                                           (update :fact
+                                                   index-update-fact-fn)
+                                           (update :bindings
+                                                   index-update-bindings-fn))
+                                      elements))]
+    (update-vals amem
+                 #(update-vals % index-update-elements))))
+
+(defn index-alpha-memory [seen amem]
+  (update-alpha-memory-index #(find-or-create-mem-idx seen %)
+                             #(index-bindings seen %)
+                             amem))
+
+(defn unindex-alpha-memory [indexed amem]
+  (update-alpha-memory-index #(nth indexed (:idx (dbgd %)))
+                             #(unindex-bindings indexed %)
+                             amem))
+
+(defn- update-beta-memory-index [index-update-fn bmem]
+  (let [index-update-tokens #(mapv index-update-fn %)]
+    (update-vals bmem
+                 #(update-vals % index-update-tokens))))
+
+(defn index-beta-memory [seen bmem]
+  (update-beta-memory-index #(index-token seen %) bmem))
+
+(defn unindex-beta-memory [indexed bmem]
+  (update-beta-memory-index #(unindex-token indexed %) bmem))
+
+(defn- update-accum-memory-index [index-update-fn accum-mem]
+  (let [index-update-accum-reduced (fn [accum-reduced]
+                                     (-> accum-reduced
+                                         (update :facts
+                                                 #(mapv index-update-fn %))
+                                         (update :reduced
+                                                 #(if (= ::eng/not-reduced %)
+                                                    %
+                                                    (index-update-fn %)))))
+        index-update-all-accum-reduced #(mapv index-update-accum-reduced %)
+        index-update-bindings-map #(update-vals % index-update-accum-reduced)]
+    (update-vals accum-mem
+                 #(update-vals % index-update-bindings-map))))
+
+(defn index-accum-memory [seen accum-mem]
+  (update-accum-memory-index #(find-or-create-mem-idx seen %)
+                             accum-mem))
+
+(defn unindex-accum-memory [indexed accum-mem]
+  (update-accum-memory-index #(nth indexed (:idx %))
+                             accum-mem))
+
+(defn update-production-memory-index [index-update-fact-fn
+                                      index-update-token-fn
+                                      pmem]
+  (let [index-update-facts #(mapv index-update-fact-fn %)]
+    (update-vals pmem
+                 (fn [token-map]
+                   (->> token-map
+                        (reduce-kv (fn [m k v]
+                                     (assoc! m
+                                             (index-update-token-fn k)
+                                             (mapv index-update-facts v)))
+                                   (transient {}))
+                        persistent!)))))
+
+(defn index-production-memory [seen pmem]
+  (update-production-memory-index #(find-or-create-mem-idx seen %)
+                                  #(index-token seen %)
+                                  pmem))
+
+(defn unindex-production-memory [indexed pmem]
+  (update-production-memory-index #(nth indexed %)
+                                  #(unindex-token indexed %)
+                                  pmem))
+
+(defn- update-activation-map-index [index-update-fn actmap]
+  (update-vals actmap
+               #(mapv (fn [^RuleOrderedActivation act]
+                        (mem/->RuleOrderedActivation (.-node-id act)
+                                                     (index-update-fn (.-token act))
+                                                     (.-activation act)
+                                                     (.-rule-load-order act)))
+                      %)))
+
+(defn index-activation-map [seen actmap]
+  (update-activation-map-index #(index-token seen %) actmap))
+
+(defn unindex-activation-map [indexed actmap]
+  (update-activation-map-index #(unindex-token indexed %) actmap))
+
+(defn index-memory [memory]
+  (let [seen (volatile! [])
+        indexed (-> memory
+                    (update :alpha-memory #(index-alpha-memory seen %))
+                    (update :accum-memory #(index-accum-memory seen %))
+                    (update :beta-memory #(index-beta-memory seen %))
+                    (update :production-memory #(index-production-memory seen %))
+                    (update :activation-map #(index-activation-map seen %)))]
+    {:memory indexed
+     :indexed-facts @seen}))
+
+(defn unindex-memory [indexed-facts memory]
+  (-> memory
+      (update :alpha-memory #(unindex-alpha-memory indexed-facts %))
+      (update :accum-memory #(unindex-accum-memory indexed-facts %))
+      (update :beta-memory #(unindex-beta-memory indexed-facts %))
+      (update :production-memory #(unindex-production-memory indexed-facts %))
+      (update :activation-map #(unindex-activation-map indexed-facts %))))
 
 ;;;; Store and restore functions.
+
+(defprotocol ISessionSerializer
+  (serialize [this session-state opts])
+  (deserialize [this opts]))
+
+(defrecord PrintDupSessionSerializer [in out]
+  ISessionSerializer
+  (serialize [_ session-state opts]
+    (let [{:keys [rulebase memory indexed-facts]} session-state
+          print-dup-source (cond-> {:memory memory
+                                    :indexed-facts indexed-facts}
+                             (:with-rulebase? opts) (assoc :rulebase rulebase))]
+      (binding [*node-id->node-cache* (volatile! {})
+                *print-meta* true
+                *print-dup* true
+                *out* (jio/writer out)]
+        (pr print-dup-source)
+        (flush))))
+
+  (deserialize [_ opts]
+    (let [session-state (binding [*node-id->node-cache* (volatile! {})
+                                  *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
+                          (-> in
+                              jio/reader
+                              clojure.lang.LineNumberingPushbackReader.
+                              ;; One item expected in the stream.  Read it.  Fail if nothing found.
+                              read))]
+      session-state)))
 
 (defn store-rulebase-state-to [session out]
   (let [{:keys [rulebase]} (eng/components session)]
