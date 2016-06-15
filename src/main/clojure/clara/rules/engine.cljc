@@ -1015,7 +1015,9 @@
                                   transport memory listener)))))
         (do
           ;; Add our newly retracted information to our node.
-          (mem/add-accum-reduced! memory node join-bindings [retracted retracted-reduced] bindings)
+          (let [accum-reduced [retracted retracted-reduced]]
+            (l/add-accum-reduced! listener node join-bindings accum-reduced bindings)
+            (mem/add-accum-reduced! memory node join-bindings accum-reduced bindings))
 
           (cond
             (and (nil? previous-converted)
@@ -1046,9 +1048,10 @@
                                   transport memory listener)))))))))
 
 (defn- join-token-with-facts [join-filter-fn token candidates]
-  (filter #(join-filter-fn token % {})  ; TODO: add env
-          candidate-facts))
+  (filter #(join-filter-fn token % {}) ; TODO: add env
+          candidates))
 
+;;; TODO MAYBE REMOVE
 (defn- join-facts-with-tokens [join-filter-fn tokens grouped-candidate-facts]
   (for [token tokens
         [fact-bindings {candidate-facts :facts}] grouped-candidate-facts
@@ -1068,19 +1071,6 @@
                                                                   candidate-facts)]]
                                        [token filtered]))}])))
 
-(defn- bindings->tokens-with-join-matches [bindings->joined-with-tokens]
-  (->> bindings->joined-with-tokens
-       (reduce-kv (fn [m bindings token->joined-map]
-                    (if-let [matched-token->joined-map (->> token->joined-map
-                                                            (into {} (filter (comp seq val)))
-                                                            not-empty)]
-                      (assoc! m
-                              bindings
-                              matched-token->joined-map)
-                      m))
-                  (transient {}))
-       persistent!))
-
 (defn- some-token-has-matches? [bindings->joined-with-tokens]
   (boolean (->> bindings->joined-with-tokens
                 vals
@@ -1099,6 +1089,7 @@
                                 (empty? joined) false
                                 :else (recur joined))))
 
+        ;; TODO Is this really useful?
         joined-has-removed? (fn [joined]
                               (loop [[r & removed] removed-candidates]
                                 (cond
@@ -1106,33 +1097,33 @@
                                   (empty? removed) false
                                   :else (recur removed))))
 
-        split-removed-from-remaining (fn [[removed remaining] token [joined :as joined-reduced]]
-                                       (if (joined-has-removed? joined)
-                                         (let [new-joined (second (mem/remove-first-of-each removed-candidates joined))
-                                               joined-remain? (seq new-joined)
-                                               new-reduced (when joined-remain?
-                                                             (do-accumulate accumulator nil nil new-joined))]
-                                           (if joined-remain?
-                                             [(assoc! removed token joined-reduced)
-                                              (assoc! remaining token [new-joined new-reduced])]
-                                             [(assoc! removed token joined-reduced)
-                                              (dissoc! remaining token)]))
-                                         [removed
-                                          remaining]))
+        update-remaining (fn [[removed remaining] token [joined :as joined-reduced]]
+                           (if (joined-has-removed? joined)
+                             (let [new-joined (second (mem/remove-first-of-each removed-candidates joined))
+                                   joined-remain? (seq new-joined)
+                                   new-reduced (when joined-remain?
+                                                 (do-accumulate accumulator nil nil new-joined))]
+                               (if joined-remain?
+                                 [(assoc! removed token joined-reduced)
+                                  (assoc! remaining token [new-joined new-reduced])]
+                                 [(assoc! removed token joined-reduced)
+                                  (dissoc! remaining token)]))
+                             [removed
+                              remaining]))
         
-        remove-affected-entries (fn [token-map]
+        update-affected-entries (fn [token-map]
                                   (let [[removed remaining]
-                                        (reduce-kv split-removed-from-remaining
+                                        (reduce-kv update-remaining
                                                    [(transient {})
                                                     (transient token-map)]
                                                    token-map)]
                                     [(persistent! removed) (persistent! remaining)]))]
     
-    (when (seq removed)
-      (let [[removed-token-map remaining-token-map] (remove-affected-entries (:token->joined-reduced-pair-map accum-reduced))]
+    (when (seq removed-candidates)
+      (let [[removed-token-map remaining-token-map] (update-affected-entries (:token->joined-reduced-pair-map accum-reduced))]
         [removed-token-map
          (assoc accum-reduced
-                :candidate-facts remaining
+                :candidate-facts remaining-candidates
                 :token->joined-reduced-pair-map remaining-token-map)]))))
 
 ;; A specialization of the AccumulateNode that supports additional tests
