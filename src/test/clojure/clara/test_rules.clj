@@ -830,6 +830,30 @@
       (is (= (frequencies [{:?s 10 :?t 9}])
              (frequencies res))))))
 
+(deftest ^{:doc "Testing for issue https://github.com/rbrush/clara-rules/issues/189"}
+  test-accum-join-filter-all-facts-retracted-for-one-binding-group-but-not-other
+  (let [mci-temps [(->Temperature 10 "MCI")
+                   (->Temperature 20 "MCI")]
+        sfo-temps [(->Temperature 10 "SFO")
+                   (->Temperature 20 "SFO")]
+        temp-rule (dsl/parse-rule [[?temps <- (acc/all) :from [Temperature (< temperature 25) (= ?location location)]]]
+                                  (insert! (->TemperatureHistory (sort-by :temperature ?temps))))
+
+        temp-history-query (dsl/parse-query [] [[TemperatureHistory (= ?temps temperatures)]])
+
+        all-temps-session (-> (mk-session [temp-rule temp-history-query] :cache false)
+                              (insert-all (concat mci-temps sfo-temps))
+                              fire-rules)]
+
+    (is (= (frequencies [{:?temps mci-temps}
+                         {:?temps sfo-temps}])
+           (frequencies (query all-temps-session temp-history-query))))
+    
+    (is (= [{:?temps sfo-temps}]
+           (-> (apply retract all-temps-session mci-temps)
+               fire-rules
+               (query temp-history-query))))))
+
 (deftest ^{:doc "A test that ensures that when candidate facts are grouped by bindings in a
                  join filter accumulator that has an initial-value to propagate, that the value
                  is propagated for empty groups."}
@@ -852,7 +876,7 @@
 
         session (mk-session [get-temp-history get-temps-under-threshold])
 
-        two-groups-one-init (-> session
+        two-groups-one-no-matches (-> session
                                 (insert thresh-11
                                         temp-10-mci
                                         temp-15-lax
@@ -874,11 +898,9 @@
                fire-rules
                (query get-temp-history))))
 
-    (is (= 2 (count two-groups-one-init)))
-    (is (= #{{:?his (->TemperatureHistory [])}
-             {:?his (->TemperatureHistory [temp-10-mci])}}
-
-           (set two-groups-one-init)))
+    (is (= 1 (count two-groups-one-no-matches)))
+    (is (= #{{:?his (->TemperatureHistory [temp-10-mci])}}
+           (set two-groups-one-no-matches)))
 
     (is (= 2 (count two-groups-no-init)))
     (is (= #{{:?his (->TemperatureHistory [temp-15-lax])}
@@ -914,8 +936,6 @@
            (set single-inserts)))))
 
 (deftest test-retract-initial-value
-  (clara.rules.compiler/clear-session-cache!)
-
   (let [get-temp-history (dsl/parse-query [] [[?his <- TemperatureHistory]])
 
         get-temps-under-threshold (dsl/parse-rule [[?temps <- (acc/all) :from [Temperature (= ?loc location)]]]
@@ -945,16 +965,20 @@
 (deftest test-retract-initial-value-filtered
   (let [get-temp-history (dsl/parse-query [] [[?his <- TemperatureHistory]])
 
-        get-temps-under-threshold (dsl/parse-rule [[?threshold <- :temp-threshold]
+        get-temps=threshold (dsl/parse-rule [[?threshold <- :temp-threshold]
+                                             [?temps <- (acc/all) :from [Temperature (= ?loc location)
+                                                                         (= temperature (:temperature ?threshold))]]]
+                                            (insert! (->TemperatureHistory ?temps)))        
 
+        get-temps-under-threshold (dsl/parse-rule [[?threshold <- :temp-threshold]
                                                    [?temps <- (acc/all) :from [Temperature (= ?loc location)
                                                                                (< temperature (:temperature ?threshold))]]]
-
                                                   (insert! (->TemperatureHistory ?temps)))
 
         thresh-11 ^{:type :temp-threshold} {:temperature 11}
 
         temp-10-mci (->Temperature 10 "MCI")
+        temp-11-mci (->Temperature 11 "MCI")
         temp-15-lax (->Temperature 15 "LAX")
         temp-20-mci (->Temperature 20 "MCI")
 
@@ -972,15 +996,64 @@
                           (fire-rules)
                           (query get-temp-history))]
 
-    (is (= 1 (count empty-history)))
-    (is (= [{:?his (->TemperatureHistory [])}]
-            empty-history))
+    (testing "AccumulateNode"
+      (let [temp-history (-> (mk-session [get-temp-history get-temps=threshold])
+                             (insert thresh-11) ;; Explicitly insert this first to expose condition.
+                             (insert temp-11-mci
+                                     temp-15-lax)
+                             (fire-rules)
+                             (query get-temp-history))
 
-    (is (= 2 (count temp-history)))
-    (is (= #{{:?his (->TemperatureHistory [])}
-             {:?his (->TemperatureHistory [temp-10-mci])}}
+            empty-history (-> (mk-session [get-temp-history get-temps=threshold])
+                              (insert thresh-11)
+                              (fire-rules)
+                              (query get-temp-history))]
 
-           (set temp-history)))))
+        (is (= 1 (count empty-history)))
+        (is (= [{:?his (->TemperatureHistory [])}]
+               empty-history))
+
+        (is (= 1 (count temp-history)))
+        (is (= #{{:?his (->TemperatureHistory [temp-11-mci])}}
+               (set temp-history))
+            (str "Only 1 binding group has any facts matching the join constraints so only "
+                 "that fact has an accumulated value"
+                 \newline
+                 "The initial value is not propagated for binding groups that may exists, "
+                 "but don't have facts matching the join constraints"
+                 \newline
+                 "See https://github.com/rbrush/clara-rules/issues/189#issuecomment-226535743 disucssion"))))
+    
+    (testing "AccumulateWithJoinFilterNode"
+      (let [temp-history (-> (mk-session [get-temp-history get-temps-under-threshold])
+                             (insert thresh-11) ;; Explicitly insert this first to expose condition.
+                             (insert temp-10-mci
+                                     temp-15-lax
+                                     temp-20-mci)
+
+                             (fire-rules)
+                             (query get-temp-history))
+
+            empty-history (-> (mk-session [get-temp-history get-temps-under-threshold])
+                              (insert thresh-11)
+                              (fire-rules)
+                              (query get-temp-history))]
+
+        (is (= 1 (count empty-history)))
+        (is (= [{:?his (->TemperatureHistory [])}]
+               empty-history))
+
+        (is (= 1 (count temp-history)))
+        (is (= #{{:?his (->TemperatureHistory [temp-10-mci])}}
+
+               (set temp-history))
+            (str "Only 1 binding group has any facts matching the join constraints so only "
+                 "that fact has an accumulated value"
+                 \newline
+                 "The initial value is not propagated for binding groups that may exists, "
+                 "but don't have facts matching the join constraints"
+                 \newline
+                 "See https://github.com/rbrush/clara-rules/issues/189#issuecomment-226535743 disucssion"))))))
 
 (deftest test-join-to-result-binding
   (let [same-wind-and-temp (dsl/parse-query
@@ -3932,12 +4005,7 @@
                  (retract (->Cold 10))
                  (fire-rules)
                  (query q1))
-             (if (= "AccumulateWithJoinFilterNode" node-type)
-               [{:?temps [[] 10]}]
-               ;; FIXME: The correct assertion here is on equality to {:?temps [[] nil]}.
-               ;; Since (->Cold 10) is retracted we should use the initial value here.
-               ;; This is an existing defect that has been logged at https://github.com/rbrush/clara-rules/issues/188
-               [{:?temps [[] nil]}]))
+             [{:?temps [[] nil]}])
           (str "Retracting all elements that matched an accumulator with an initial value "
                \newline
                "should cause the facts inserted to use nil as the binding for bindings on the accumulator."
@@ -4228,9 +4296,10 @@
                             (cond (false? a) false
                                   (false? b) true
                                   :else (throw
-                                         (IllegalStateException. (str "This test should only compare false and numeric values, "
-                                                                      \newline not
-                                                                      "a numeric value to another numeric value")))))
+                                         (IllegalStateException.
+                                          (str "This test should only compare false and numeric values, "
+                                               \newline
+                                               "not a numeric value to another numeric value")))))
                           false))
 
 (deftest test-false-field-in-accum
@@ -4246,27 +4315,27 @@
                                                   (insert! (->ColdAndWindy ?t ?t)))]]
           :let [empty-session (mk-session [cold-and-windy-query cold-rule] :cache false)]]
 
-    (is (= (-> empty-session
+    (is (= [{:?t false}]
+           (-> empty-session
                (insert (->Cold false))
                fire-rules
-               (query cold-and-windy-query))
-           [{:?t false}])
+               (query cold-and-windy-query)))
         (str "The minimum temperature should be boolean false for node type " node-type))
 
-    (is (= (-> empty-session
+    (is (= [{:?t 10}]
+           (-> empty-session
                (insert (->Cold false) (->Cold 10))
                fire-rules
-               (query cold-and-windy-query))
-           [{:?t 10}])
+               (query cold-and-windy-query)))
         (str "The minimum temperature should be 10 for node type " node-type))
 
-    (is (= (-> empty-session
+    (is (= [{:?t false}]
+           (-> empty-session
                (insert (->Cold false) (->Cold 10))
                fire-rules
                (retract (->Cold 10))
                fire-rules
-               (query cold-and-windy-query))
-           [{:?t false}])
+               (query cold-and-windy-query)))
         (str "The minimum temperature should retract back to boolean false for node type " node-type))))     
 
 (definterface Marker)

@@ -7,7 +7,7 @@
             [clara.rules.memory :as mem]
             [clara.rules.listener :as l]
             [clara.rules.platform :as platform]))
-
+(defmacro dbge [x] `(let [x# ~x] (println '~x) (prn x#) x#))
 ;; The accumulator is a Rete extension to run an accumulation (such as sum, average, or similar operation)
 ;; over a collection of values passing through the Rete network. This object defines the behavior
 ;; of an accumulator. See the AccumulatorNode for the actual node implementation in the network.
@@ -1052,6 +1052,7 @@
           candidates))
 
 (defn- bindings->joined-facts-with-tokens [join-filter-fn tokens grouped-candidates]
+  grouped-candidates
   (into {}
         (for [[bindings candidates] grouped-candidates]
           [bindings
@@ -1065,7 +1066,7 @@
   (boolean (->> bindings->joined-with-tokens
                 vals
                 (map :token->joined-map)
-                vals
+                (mapcat vals)
                 (some seq))))
 
 (defn- initial-value-join-filter-accum-reduced [initial-value]
@@ -1077,7 +1078,7 @@
                                   (for [[token joined] token->joined-map
                                         :when (seq joined)
                                         :let [accum-result (do-accumulate accumulator nil nil joined)]]
-                                    [joined accum-result]))))
+                                    [token [joined accum-result]]))))
 
 (defn- remove-tokens-from-accum-reduced [accum-reduced to-remove]
   (let [{:keys [token->joined-reduced-pair-map]} accum-reduced]
@@ -1096,8 +1097,8 @@
          (assoc accum-reduced :token->joined-reduced-pair-map token-map)]))))
 
 (defn- remove-candidates-from-accum-reduced [accumulator join-filter-fn accum-reduced to-remove]
-  (let [candidate-facts (:candidate-facts accum-reduced)
-        [removed-candidates remaining-candidates] (mem/remove-first-of-each to-remove candidate-facts)
+  (let [candidates (:candidates accum-reduced)
+        [removed-candidates remaining-candidates] (mem/remove-first-of-each to-remove candidates)
 
         has-removed-item? (fn [joined r]
                             (loop [[j & joined] joined]
@@ -1135,13 +1136,16 @@
                                                     (transient token-map)]
                                                    token-map)]
                                     [(persistent! removed) (persistent! remaining)]))]
-    
+
     (when (seq removed-candidates)
-      (let [[removed-token-map remaining-token-map] (update-affected-entries (:token->joined-reduced-pair-map accum-reduced))]
+      (let [{:keys [token->joined-reduced-pair-map]} accum-reduced
+            [removed-token-map remaining-token-map] (when token->joined-reduced-pair-map
+                                                      (update-affected-entries token->joined-reduced-pair-map))]
         [removed-token-map
-         (assoc accum-reduced
-                :candidate-facts remaining-candidates
-                :token->joined-reduced-pair-map remaining-token-map)]))))
+         (cond-> (assoc accum-reduced
+                        :candidates remaining-candidates)
+           token->joined-reduced-pair-map (assoc :token->joined-reduced-pair-map remaining-token-map))]))))
+
 
 ;; A specialization of the AccumulateNode that supports additional tests
 ;; that have to occur on the beta side of the network. The key difference between this and the simple
@@ -1155,10 +1159,11 @@
     ;; Facts that are candidates for matching the token are used in this accumulator node,
     ;; which must be filtered before running the accumulation.
     (let [convert-return-fn (:convert-return-fn accumulator)
-          grouped-candidate-facts (mem/get-accum-reduced-all memory node join-bindings)
-
+          bindings-grouped-accum-reduced (mem/get-accum-reduced-all memory node join-bindings)
+          binding-candidates-seq (for [[bindings {:keys [candidates]}] bindings-grouped-accum-reduced]
+                                   [bindings candidates])
           ;; Filter to items that match the incoming token.
-          bindings->joined-with-tokens (bindings->joined-facts-with-tokens join-filter-fn tokens grouped-candidate-facts)
+          bindings->joined-with-tokens (bindings->joined-facts-with-tokens join-filter-fn tokens binding-candidates-seq)
           has-matches? (some-token-has-matches? bindings->joined-with-tokens)
 
           ;; Look in the special memory location for initial fact bindings.
@@ -1175,7 +1180,7 @@
         ;; The reasoning here is the same as AccumulateNode right-activate-reduced.
         (l/remove-accum-reduced! listener node join-bindings initial-fact-bindings)
         (mem/remove-accum-reduced! memory node join-bindings initial-fact-bindings))
-      
+        
       (mem/add-tokens! memory node join-bindings tokens)
 
       (cond
@@ -1195,9 +1200,9 @@
                   token (keys (:token->joined-reduced-pair-map accum-reduced))]
             (retract-accumulated node accum-condition accumulator result-binding token initial-converted {}
                                  transport memory listener))
-          
-          (doseq [[bindings accum-reduced] binding-accum-reduced-pairs]
             
+          (doseq [[bindings accum-reduced] binding-accum-reduced-pairs]
+              
             (mem/add-accum-reduced! memory node join-bindings accum-reduced bindings)
 
             (doseq [[token [joined reduced]] (:token->joined-reduced-pair-map accum-reduced)
@@ -1215,7 +1220,7 @@
               fact-bindings {::initial-value true}]
           (l/add-accum-reduced! listener node join-bindings accum-reduced fact-bindings)
           (mem/add-accum-reduced! memory node join-bindings accum-reduced fact-bindings)
-          
+            
           ;; Send the created accumulated item to the children for each token.
           (doseq [token tokens]
             (send-accumulated node accum-condition accumulator result-binding token initial-converted {}
@@ -1225,7 +1230,7 @@
         :else nil)))
 
   (left-retract [node join-bindings tokens memory transport listener]
-    
+      
     (doseq [[bindings accum-reduced] (mem/get-accum-reduced-all memory node join-bindings)
             :let [removed-tokens (mem/remove-tokens! memory node join-bindings tokens)
                   [removed-token-reduced-pairs accum-reduced] (remove-tokens-from-accum-reduced accum-reduced removed-tokens)]]
@@ -1259,7 +1264,7 @@
 
       (if (seq matched-tokens)
         ;; Combine previously reduced items together, join to matching tokens, and emit child tokens.
-        (let [;; Filter to incoming facts that match the previous tokens.
+        (let [ ;; Filter to incoming facts that match the previous tokens.
               bindings->joined-with-tokens (bindings->joined-facts-with-tokens join-filter-fn matched-tokens binding-candidates-seq)
               has-matches? (some-token-has-matches? bindings->joined-with-tokens)
 
@@ -1285,7 +1290,8 @@
 
                         {previous-candidates :candidates
                          previous-token->joined-reduced-pair-map :token->joined-reduced-pair-map}
-                        previous
+                        (when has-previous?
+                          previous)
 
                         combined-candidates (if previous-candidates
                                               (into previous-candidates candidates)
@@ -1296,11 +1302,12 @@
                         token-join-results
                         (when has-matches?
                           (for [[token joined] token->joined-map
-                                :let [[previous-joined previous-reduced] (previous-token->joined-reduced-pair-map token)
+                                :let [[previous-joined previous-reduced] (when has-previous?
+                                                                           (previous-token->joined-reduced-pair-map token))
                                       previous-converted (if (some? previous-reduced)
                                                            (convert-return-fn previous-reduced))]]
                             (if (seq joined)
-                              (let [;; Combine the newly reduced values with any previous items.
+                              (let [ ;; Combine the newly reduced values with any previous items.
                                     combined-joined (if previous-joined
                                                       (into previous-joined joined)
                                                       joined)
@@ -1320,7 +1327,7 @@
                                :new-joined? false
                                :previous-joined previous-joined
                                :previous-converted previous-converted})))
-                        
+                          
                         token->joined-reduced-pair-map
                         (and token-join-results
                              (into {}
@@ -1332,7 +1339,7 @@
                         accum-reduced (->JoinFilterAccumReduced combined-candidates
                                                                 (or token->joined-reduced-pair-map
                                                                     previous-token->joined-reduced-pair-map))]]
-            
+              
             (l/add-accum-reduced! listener node join-bindings accum-reduced bindings)
             (mem/add-accum-reduced! memory node join-bindings accum-reduced bindings)
 
@@ -1369,18 +1376,23 @@
                                        transport memory listener)
                   (send-accumulated node accum-condition accumulator result-binding token combined-converted bindings
                                     transport memory listener))))))
-        
+          
         ;; There are no tokens to join with the candidate facts, so they just need to be added to any the
         ;; existing candidates in the accum results.  If none are existing they will be added for the
         ;; first time.  The candidates are stored in case new tokens come later that they will join to.
         (doseq [[bindings candidates] binding-candidates-seq
                 :let [previous (mem/get-accum-reduced memory node join-bindings bindings)]]
           (if (not= ::mem/no-accum-reduced previous)
-            (mem/add-accum-reduced! memory node join-bindings bindings (update previous
-                                                                               :candidates
-                                                                               into
-                                                                               candidates))
-            (mem/add-accum-reduced! memory node join-bindings bindings (->JoinFilterAccumReduced candidates nil)))))))
+            (mem/add-accum-reduced! memory node
+                                    join-bindings
+                                    (update previous
+                                            :candidates
+                                            into
+                                            candidates)
+                                    bindings)
+            (mem/add-accum-reduced! memory node join-bindings
+                                    (->JoinFilterAccumReduced candidates nil)
+                                    bindings))))))
 
   IRightActivate
   (right-activate [node join-bindings elements memory transport listener]
@@ -1400,11 +1412,11 @@
           matched-tokens (mem/get-tokens memory node join-bindings)]
 
       (doseq [:let [binding-candidates-seq (pre-reduce node elements)
-                    
+                      
                     ;; Filter to incoming facts that match the previous tokens.
                     bindings->joined-with-tokens (bindings->joined-facts-with-tokens join-filter-fn matched-tokens binding-candidates-seq)
                     has-matches? (some-token-has-matches? bindings->joined-with-tokens)]
-              
+                
               [bindings facts-to-remove] binding-candidates-seq
 
               :let [previous-accum-reduced (mem/get-accum-reduced memory node join-bindings bindings)]
@@ -1417,7 +1429,7 @@
 
               ;; Nothing to retract if the items coming were never candidates in the first place.
               :when accum-reduced-retracted
-              
+                
               :let [{remaining-candidates :candidates
                      remaining-token-map :token->joined-reduced-pair-map} accum-reduced-retracted
                     all-retracted? (empty? remaining-token-map)]]
@@ -1427,7 +1439,7 @@
             ;; When everything has been retracted we need to remove the accumulated results from memory.
             (l/remove-accum-reduced! listener node join-bindings bindings)
             (mem/remove-accum-reduced! memory node join-bindings bindings)
-            
+              
             (doseq [[token [previous-joined previous-reduced]] (:token->joined-reduced-pair-map previous-accum-reduced)
                     :let [previous-converted (when (some? previous-reduced)
                                                (convert-return-fn previous-reduced))]
@@ -1435,14 +1447,14 @@
               ;; Retract the previous token.
               (retract-accumulated node accum-condition accumulator result-binding token previous-converted bindings
                                    transport memory listener)))
-          
+            
           (do
             ;; Add the new accum reduced value to our node.
             (l/add-accum-reduced! listener node join-bindings accum-reduced-retracted bindings)
             (mem/add-accum-reduced! memory node join-bindings accum-reduced-retracted bindings)
 
             (doseq [ ;; Get all of the previously matched tokens so we can retract and re-send them.
-                    {:keys [token [_ previous-reduced]]} removed-token-map
+                    [token [_ previous-reduced]] removed-token-map
 
                     ;; Compute the new version with the retracted information.
                     :let [previous-converted (when (some? previous-reduced)
@@ -1453,7 +1465,7 @@
                                                 (convert-return-fn retracted-reduced))]]
 
               (cond
-                
+                  
                 ;; When both the previous and new results are nil do nothing.
                 (and (nil? previous-converted)
                      (nil? retracted-converted))
