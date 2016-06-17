@@ -1055,6 +1055,36 @@
                  \newline
                  "See https://github.com/rbrush/clara-rules/issues/189#issuecomment-226535743 disucssion"))))))
 
+(def test-accum-initial-value-from-left-retract
+  (let [hash-join (dsl/parse-query [] [[Cold (= ?t temperature)]
+                                       [?ts <- (acc/all) :from [Temperature (= ?loc location)
+                                                                (= ?t temperature)]]])
+        join-filter (dsl/parse-query [] [[Cold (= ?t temperature)]
+                                         [?ts <- (acc/all) :from [Temperature (= ?loc location)
+                                                                  (< ?t temperature)]]])
+
+        hash-join-with-cold (-> (mk-session [hash-join])
+                                (insert (->Cold 10))
+                                fire-rules)
+
+        join-filter-with-cold (-> (mk-session [join-filter])
+                                  (insert (->Cold 10))
+                                  fire-rules)]
+
+    (is (= [{:?t 10 :?ts []}]
+           (query hash-join-with-cold hash-join)
+           (query join-filter-with-cold join-filter)))
+
+    (is (empty? (query (-> hash-join-with-cold
+                           (retract (->Cold 10))
+                           fire-rules)
+                       hash-join)))
+
+    (is (empty? (query (-> join-filter-with-cold
+                           (retract (->Cold 10))
+                           fire-rules)
+                       join-filter)))))
+
 (deftest test-join-to-result-binding
   (let [same-wind-and-temp (dsl/parse-query
                             []
