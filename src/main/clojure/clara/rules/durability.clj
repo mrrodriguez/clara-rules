@@ -33,8 +33,9 @@
             TestNode
             AccumulateNode
             AccumulateWithJoinFilterNode]))
-(defmacro dbgd [x] `(let [x# ~x] (println '~x) (prn x#) x#))
-(println "COMPILING DURABILITY")
+(def holder (atom {}))
+(defmacro dbgd [x] `(let [x# ~x] (println '~x) (prn x#) (swap! holder assoc '~x x#) x#))
+(println "COMPILING DURABILITY AGAIN")
 
 ;; A schema representing a minimal representation of a rule session's state.
 ;; This allows for efficient storage, particularly when serialized with Fressian or a similar format
@@ -449,7 +450,7 @@
                                   pmem))
 
 (defn unindex-production-memory [indexed pmem]
-  (update-production-memory-index #(nth indexed %)
+  (update-production-memory-index #(nth indexed (:idx %))
                                   #(unindex-token indexed %)
                                   pmem))
 
@@ -502,23 +503,27 @@
   ISessionSerializer
   (serialize [_ session-state opts]
     (let [{:keys [rulebase memory indexed-facts]} session-state
-          print-dup-source (cond-> {:memory memory}
-                             (:with-rulebase? opts) (assoc :rulebase rulebase))]
-      (binding [*node-id->node-cache* (volatile! {})
-                *print-meta* true
-                *print-dup* true
-                *out* (jio/writer out)]
-        (pr print-dup-source)
-        (flush))))
+          print-dup-source (cond
+                             (:rulebase-only? opts) {:rulebase rulebase}
+                             (:with-rulebase? opts) {:memory memory
+                                                     :rulebase rulebase}
+                             :else {:memory memory})]
+      (with-open [wtr (jio/writer out)]
+        (binding [*node-id->node-cache* (volatile! {})
+                  *print-meta* true
+                  *print-dup* true
+                  *out* wtr]
+          (pr print-dup-source)
+          (flush)))))
 
   (deserialize [_ opts]
     (let [session-state (binding [*node-id->node-cache* (volatile! {})
                                   *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
-                          (-> in
-                              jio/reader
-                              clojure.lang.LineNumberingPushbackReader.
-                              ;; One item expected in the stream.  Read it.  Fail if nothing found.
-                              read))]
+                          (with-open [rdr (jio/reader in)]
+                            (-> rdr
+                                clojure.lang.LineNumberingPushbackReader.
+                                ;; One item expected in the stream.  Read it.  Fail if nothing found.
+                                read)))]
       session-state)))
 
 (defrecord InMemoryMemoryFactsSerializer [holder]
@@ -527,6 +532,13 @@
     (reset! holder fact-seq))
   (deserialize-facts [_ opts]
     @holder))
+
+(defn serialize-rulebase [session session-serializer opts]
+  (let [cs (eng/components session)]
+    (serialize session-serializer (select-keys cs #{:rulebase}) (assoc opts :rulebase-only? true))))
+
+(defn deserialize-rulebase [session-serializer opts]
+  (:rulebase (deserialize session-serializer (assoc opts :rulebase-only? true))))
 
 (defn serialize-session-state [session session-serializer memory-facts-serializer opts]
   (let [{:keys [rulebase memory]} (eng/components session)
@@ -552,10 +564,10 @@
         session-state (deserialize session-serializer opts)
         mem-facts (deserialize-facts memory-facts-serializer opts)
 
-        {:keys [base-session listeners transport]} opts
+        {:keys [base-rulebase listeners transport]} opts
         ;; The rulebase should either be given from the base-session or found in
         ;; the restored session-state.
-        rulebase (or (some-> base-session eng/components :rulebase)
+        rulebase (or base-rulebase
                      (:rulebase session-state))
         opts (-> opts
                  (assoc :rulebase rulebase)
@@ -577,7 +589,8 @@
         transport (or transport (clara.rules.engine.LocalTransport.))
         listeners (or listeners [])
         get-alphas-fn (:get-alphas-fn opts)
-        memory (-> (:memory session-state)
+        memory (-> mem-facts
+                   (unindex-memory (:memory session-state))
                    ;; Memory currently maintains its own reference to the rulebase.  This was removed when serializing, but should be put back now.
                    (assoc :rulebase rulebase)
                    (merge memory-opts)
