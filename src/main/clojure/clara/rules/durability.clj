@@ -389,25 +389,6 @@
                              #(unindex-bindings indexed %)
                              amem))
 
-(defn index-accum-memory [seen accum-mem]
-  (update-accum-memory-index #(find-or-create-mem-idx seen %)
-                             accum-mem))
-
-(defn unindex-accum-memory [indexed accum-mem]
-  (update-accum-memory-index #(nth indexed (:idx %))
-                             accum-mem))
-
-(defn- update-beta-memory-index [index-update-fn bmem]
-  (let [index-update-tokens #(mapv index-update-fn %)]
-    (update-vals bmem
-                 #(update-vals % index-update-tokens))))
-
-(defn index-beta-memory [seen bmem]
-  (update-beta-memory-index #(index-token seen %) bmem))
-
-(defn unindex-beta-memory [indexed bmem]
-  (update-beta-memory-index #(unindex-token indexed %) bmem))
-
 (defn- update-accum-memory-index [index-update-fn accum-mem]
   (let [index-facts #(mapv index-update-fn %)
         index-update-accum-reduced (fn [accum-reduced]
@@ -428,6 +409,25 @@
         index-update-bindings-map #(update-vals % index-update-accum-reduced)]
     (update-vals accum-mem
                  #(update-vals % index-update-bindings-map))))
+
+(defn index-accum-memory [seen accum-mem]
+  (update-accum-memory-index #(find-or-create-mem-idx seen %)
+                             accum-mem))
+
+(defn unindex-accum-memory [indexed accum-mem]
+  (update-accum-memory-index #(nth indexed (:idx %))
+                             accum-mem))
+
+(defn- update-beta-memory-index [index-update-fn bmem]
+  (let [index-update-tokens #(mapv index-update-fn %)]
+    (update-vals bmem
+                 #(update-vals % index-update-tokens))))
+
+(defn index-beta-memory [seen bmem]
+  (update-beta-memory-index #(index-token seen %) bmem))
+
+(defn unindex-beta-memory [indexed bmem]
+  (update-beta-memory-index #(unindex-token indexed %) bmem))
 
 (defn update-production-memory-index [index-update-fact-fn
                                       index-update-token-fn
@@ -502,8 +502,7 @@
   ISessionSerializer
   (serialize [_ session-state opts]
     (let [{:keys [rulebase memory indexed-facts]} session-state
-          print-dup-source (cond-> {:memory memory
-                                    :indexed-facts indexed-facts}
+          print-dup-source (cond-> {:memory memory}
                              (:with-rulebase? opts) (assoc :rulebase rulebase))]
       (binding [*node-id->node-cache* (volatile! {})
                 *print-meta* true
@@ -523,7 +522,8 @@
       session-state)))
 
 (defrecord InMemoryMemoryFactsSerializer [holder]
-  (serialize-facts [_ fact-seq opts]
+  IMemoryFactsSerializer
+  (serialize-facts [this fact-seq opts]
     (reset! holder fact-seq))
   (deserialize-facts [_ opts]
     @holder))
@@ -532,15 +532,27 @@
   (let [{:keys [rulebase memory]} (eng/components session)
         imem (index-memory memory)
         ;; Technically the rulebase is in memory too currently.
-        session-state (assoc imem :rulebase rulebase)]
-    (serialize-facts memory-facts-serializer (:indexed-facts imem))
-    (serialize session-serializer imem)))
+        session-state (-> imem
+                          (assoc :rulebase rulebase)
+                          (dissoc :indexed-facts)
+                          (update :memory
+                                  dissoc
+                                  ;; The rulebase does need to be stored per memory.  It will be restored during deserialization.
+                                  :rulebase
+                                  ;; Currently these do not support serialization and must be provided during deserializtion via a
+                                  ;; base-session or they default to the standard defaults.
+                                  :activation-group-sort-fn
+                                  :activation-group-fn
+                                  :alphas-fn))]
+    (serialize-facts memory-facts-serializer (:indexed-facts imem) opts)
+    (serialize session-serializer session-state opts)))
 
 (defn deserialize-session-state [session-serializer memory-facts-serializer opts]
-  (let [{:keys [base-session listeners transport]} opts
-        mem-facts (deserialize-facts memory-facts-serializer (:indexed-facts imem))
-        session-state (deserialize session-serializer imem)
-        
+  (let [;; Deserialize the session along with working memory facts.
+        session-state (deserialize session-serializer opts)
+        mem-facts (deserialize-facts memory-facts-serializer opts)
+
+        {:keys [base-session listeners transport]} opts
         ;; The rulebase should either be given from the base-session or found in
         ;; the restored session-state.
         rulebase (or (some-> base-session eng/components :rulebase)
@@ -555,31 +567,29 @@
                  ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
                  (update :get-alphas-fn
                          #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
+
         memory-opts (select-keys opts
                                  #{:rulebase
                                    :activation-group-sort-fn
                                    :activation-group-fn
                                    :get-alphas-fn})
+
         transport (or transport (clara.rules.engine.LocalTransport.))
         listeners (or listeners [])
         get-alphas-fn (:get-alphas-fn opts)
         memory (-> (:memory session-state)
+                   ;; Memory currently maintains its own reference to the rulebase.  This was removed when serializing, but should be put back now.
+                   (assoc :rulebase rulebase)
                    (merge memory-opts)
                    ;; Naming difference for some reason.
                    (set/rename-keys {:get-alphas-fn :alphas-fn})
                    mem/map->PersistentLocalMemory)]
+
     (eng/assemble {:rulebase rulebase
                    :memory memory
                    :transport transport
                    :listeners listeners
-                   :get-alphas-fn get-alphas-fn}))
-
-
-  (let [{:keys [rulebase memory]} (eng/components session)
-        imem (index-memory memory)
-        ;; Technically the rulebase is in memory too currently.
-        session-state (assoc imem :rulebase rulebase)]
-    ))
+                   :get-alphas-fn get-alphas-fn})))
 
 ;;;; Store and restore functions.
 
