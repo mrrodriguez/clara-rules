@@ -487,11 +487,16 @@
       (update :production-memory #(unindex-production-memory indexed-facts %))
       (update :activation-map #(unindex-activation-map indexed-facts %))))
 
-;;;; Store and restore functions.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; New API via 2 protocol approach
 
 (defprotocol ISessionSerializer
   (serialize [this session-state opts])
   (deserialize [this opts]))
+
+(defprotocol IMemoryFactsSerializer
+  (serialize-facts [this fact-seq opts])
+  (deserialize-facts [this opts]))
 
 (defrecord PrintDupSessionSerializer [in out]
   ISessionSerializer
@@ -516,6 +521,67 @@
                               ;; One item expected in the stream.  Read it.  Fail if nothing found.
                               read))]
       session-state)))
+
+(defrecord InMemoryMemoryFactsSerializer [holder]
+  (serialize-facts [_ fact-seq opts]
+    (reset! holder fact-seq))
+  (deserialize-facts [_ opts]
+    @holder))
+
+(defn serialize-session-state [session session-serializer memory-facts-serializer opts]
+  (let [{:keys [rulebase memory]} (eng/components session)
+        imem (index-memory memory)
+        ;; Technically the rulebase is in memory too currently.
+        session-state (assoc imem :rulebase rulebase)]
+    (serialize-facts memory-facts-serializer (:indexed-facts imem))
+    (serialize session-serializer imem)))
+
+(defn deserialize-session-state [session-serializer memory-facts-serializer opts]
+  (let [{:keys [base-session listeners transport]} opts
+        mem-facts (deserialize-facts memory-facts-serializer (:indexed-facts imem))
+        session-state (deserialize session-serializer imem)
+        
+        ;; The rulebase should either be given from the base-session or found in
+        ;; the restored session-state.
+        rulebase (or (some-> base-session eng/components :rulebase)
+                     (:rulebase session-state))
+        opts (-> opts
+                 (assoc :rulebase rulebase)
+                 ;; Right now activation fns do not serialize.
+                 (update :activation-group-sort-fn
+                         #(eng/options->activation-group-sort-fn {:activation-group-sort-fn %}))
+                 (update :activation-group-fn
+                         #(eng/options->activation-group-fn {:activation-group-fn %}))
+                 ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
+                 (update :get-alphas-fn
+                         #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
+        memory-opts (select-keys opts
+                                 #{:rulebase
+                                   :activation-group-sort-fn
+                                   :activation-group-fn
+                                   :get-alphas-fn})
+        transport (or transport (clara.rules.engine.LocalTransport.))
+        listeners (or listeners [])
+        get-alphas-fn (:get-alphas-fn opts)
+        memory (-> (:memory session-state)
+                   (merge memory-opts)
+                   ;; Naming difference for some reason.
+                   (set/rename-keys {:get-alphas-fn :alphas-fn})
+                   mem/map->PersistentLocalMemory)]
+    (eng/assemble {:rulebase rulebase
+                   :memory memory
+                   :transport transport
+                   :listeners listeners
+                   :get-alphas-fn get-alphas-fn}))
+
+
+  (let [{:keys [rulebase memory]} (eng/components session)
+        imem (index-memory memory)
+        ;; Technically the rulebase is in memory too currently.
+        session-state (assoc imem :rulebase rulebase)]
+    ))
+
+;;;; Store and restore functions.
 
 (defn store-rulebase-state-to [session out]
   (let [{:keys [rulebase]} (eng/components session)]
