@@ -34,6 +34,7 @@
             AccumulateNode
             AccumulateWithJoinFilterNode]))
 (defmacro dbgd [x] `(let [x# ~x] (println '~x) (prn x#) x#))
+(println "COMPILING DURABILITY")
 
 ;; A schema representing a minimal representation of a rule session's state.
 ;; This allows for efficient storage, particularly when serialized with Fressian or a similar format
@@ -384,9 +385,17 @@
                              amem))
 
 (defn unindex-alpha-memory [indexed amem]
-  (update-alpha-memory-index #(nth indexed (:idx (dbgd %)))
+  (update-alpha-memory-index #(nth indexed (:idx %))
                              #(unindex-bindings indexed %)
                              amem))
+
+(defn index-accum-memory [seen accum-mem]
+  (update-accum-memory-index #(find-or-create-mem-idx seen %)
+                             accum-mem))
+
+(defn unindex-accum-memory [indexed accum-mem]
+  (update-accum-memory-index #(nth indexed (:idx %))
+                             accum-mem))
 
 (defn- update-beta-memory-index [index-update-fn bmem]
   (let [index-update-tokens #(mapv index-update-fn %)]
@@ -400,26 +409,25 @@
   (update-beta-memory-index #(unindex-token indexed %) bmem))
 
 (defn- update-accum-memory-index [index-update-fn accum-mem]
-  (let [index-update-accum-reduced (fn [accum-reduced]
-                                     (-> accum-reduced
-                                         (update :facts
-                                                 #(mapv index-update-fn %))
-                                         (update :reduced
-                                                 #(if (= ::eng/not-reduced %)
-                                                    %
-                                                    (index-update-fn %)))))
-        index-update-all-accum-reduced #(mapv index-update-accum-reduced %)
+  (let [index-facts #(mapv index-update-fn %)
+        index-update-accum-reduced (fn [accum-reduced]
+                                     (let [m (meta accum-reduced)]
+                                       (if (::eng/accum-node m)
+                                         ;; AccumulateNode
+                                         (let [[facts red] accum-reduced]
+                                           (with-meta
+                                             [(index-facts facts)
+                                              (if (= ::eng/not-reduced red)
+                                                red
+                                                (index-update-fn red))]
+                                             m))
+
+                                         ;; AccumulateWithJoinFilterNode
+                                         (with-meta (index-facts accum-reduced)
+                                           m))))
         index-update-bindings-map #(update-vals % index-update-accum-reduced)]
     (update-vals accum-mem
                  #(update-vals % index-update-bindings-map))))
-
-(defn index-accum-memory [seen accum-mem]
-  (update-accum-memory-index #(find-or-create-mem-idx seen %)
-                             accum-mem))
-
-(defn unindex-accum-memory [indexed accum-mem]
-  (update-accum-memory-index #(nth indexed (:idx %))
-                             accum-mem))
 
 (defn update-production-memory-index [index-update-fact-fn
                                       index-update-token-fn
