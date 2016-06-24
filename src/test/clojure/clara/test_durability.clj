@@ -287,3 +287,23 @@
     (.delete tmp1)
     (.delete tmp2)
     (.delete tmp3)))
+
+
+(comment ;; TESTING
+  (do
+    (require 'clara.rules.durability
+             'clara.test-durability)
+    (def tmp (jio/file "tmp"))
+    (def ss (d/->PrintDupSessionSerializer tmp tmp))
+    (def ms (d/->InMemoryMemoryFactsSerializer (atom nil)))
+    (def fired (-> durability-sample
+                   (insert (->Temperature 50 "MCI")
+                           (->Hot 50)
+                           (->Hot 10)
+                           (->Cold 50)
+                           (->Cold 10)
+                           (->Cold 20))
+                   fire-rules))
+    (d/serialize-session-state fired ss ms {:with-rulebase? true})
+    (def restored (d/deserialize-session-state ss ms {}))
+    (= (query fired find-hist) (query restored find-hist))))

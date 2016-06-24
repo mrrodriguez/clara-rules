@@ -315,14 +315,17 @@
 ;;;; Memory serialization
 
 (defrecord MemIdx [idx])
+(defrecord AccumResultMemIdx [idx])
 
-(defn find-item-idx [item coll]
-  (let [n (count coll)]
-    (loop [i 0]
-      (when (< i n)
-        (if (identical? item (nth coll i))
-          (->MemIdx i)
-          (recur (inc i)))))))
+(defn find-item-idx
+  ([item coll] (find-item-idx item coll false))
+  ([item coll accum-result?]
+   (let [n (count coll)]
+     (loop [i 0]
+       (when (< i n)
+         (if (identical? item (nth coll i))
+           (if accum-result? (->AccumResultMemIdx i) (->MemIdx i))
+           (recur (inc i))))))))
 
 ;;; TODO Share from clara.rules.memory?
 ;;; TODO is it faster to start from an empty map or from a transient copy of m?
@@ -333,39 +336,61 @@
                   (transient {}))
        persistent!))
 
-(defn- index-bindings [seen bindings]
-  (update-vals bindings
-               #(or (find-item-idx % @seen)
-                    %)))
+(defn- index-bindings
+  ([seen bindings]
+   (index-bindings seen nil bindings))
+  ([seen accum-results bindings]
+   (update-vals bindings
+                #(or (when accum-results (find-item-idx % accum-results true))
+                     (find-item-idx % @seen)
+                     %))))
 
-(defn- unindex-bindings [indexed bindings]
-  (update-vals bindings
-               #(if (instance? MemIdx %)
-                  (nth indexed (:idx %))
-                  %)))
+(defn- unindex-bindings
+  ([indexed bindings]
+   (unindex-bindings indexed nil bindings))
+  ([indexed accum-results bindings]
+   (update-vals bindings
+                #(cond
+                   (and accum-results (instance? AccumResultMemIdx %))
+                   (nth accum-results (:idx %))
+                   
+                   (instance? MemIdx %)
+                   (nth indexed (:idx %))
+                   
+                   :else
+                   %))))
 
-(defn- find-or-create-mem-idx [seen fact]
-  (or (find-item-idx fact @seen)
-      (do (vswap! seen conj fact)
-          (->MemIdx (dec (count @seen))))))
+(defn- find-or-create-mem-idx
+  ([seen fact] (find-or-create-mem-idx seen fact false))
+  ([seen fact accum-result?]
+   (or (find-item-idx fact @seen accum-result?)
+       (do (vswap! seen conj fact)
+           (if accum-result?
+             (->AccumResultMemIdx (dec (count @seen)))
+             (->MemIdx (dec (count @seen))))))))
 
-(defn- index-token [seen token]
+(defn- index-token [seen accum-results token]
   (-> token
       (update :matches
               #(mapv (fn [[fact node-id]]
-                       [(find-or-create-mem-idx seen fact) node-id])
+                       [(or (find-item-idx fact accum-results true)
+                            (find-or-create-mem-idx seen fact))
+                        node-id])
                      %))
       (update :bindings
-              #(index-bindings seen %))))
+              #(index-bindings seen accum-results %))))
 
-(defn- unindex-token [indexed token]
+(defn- unindex-token [indexed accum-results token]
   (-> token
       (update :matches
               #(vec
                 (for [[idx node-id] %]
-                  [(nth indexed (:idx idx)) node-id])))
+                  [(if (instance? AccumResultMemIdx idx)
+                     (nth accum-results (:idx idx))
+                     (nth indexed (:idx idx)))
+                   node-id])))
       (update :bindings
-              #(unindex-bindings indexed %))))
+              #(unindex-bindings indexed accum-results %))))
 
 (defn- update-alpha-memory-index [index-update-fact-fn
                                   index-update-bindings-fn
@@ -390,33 +415,50 @@
                              #(unindex-bindings indexed %)
                              amem))
 
-(defn- update-accum-memory-index [index-update-fn accum-mem]
+(defn- update-accum-memory-index [index-update-fn
+                                  accum-result-update-fn
+                                  accum-mem]
   (let [index-facts #(mapv index-update-fn %)
-        index-update-accum-reduced (fn [accum-reduced]
+        index-update-accum-reduced (fn [node-id accum-reduced]
                                      (let [m (meta accum-reduced)]
                                        (if (::eng/accum-node m)
                                          ;; AccumulateNode
-                                         (let [[facts red] accum-reduced]
+                                         (let [[facts res] accum-reduced
+                                               facts (index-facts facts)]
                                            (with-meta
-                                             [(index-facts facts)
-                                              (if (= ::eng/not-reduced red)
-                                                red
-                                                (index-update-fn red))]
+                                             [facts
+                                              (if (= ::eng/not-reduced res)
+                                                res
+                                                (accum-result-update-fn node-id facts res))]
                                              m))
 
                                          ;; AccumulateWithJoinFilterNode
                                          (with-meta (index-facts accum-reduced)
                                            m))))
-        index-update-bindings-map #(update-vals % index-update-accum-reduced)]
-    (update-vals accum-mem
-                 #(update-vals % index-update-bindings-map))))
+        index-update-bindings-map (fn [node-id bindings-map]
+                                    (update-vals bindings-map #(index-update-accum-reduced node-id %)))]
 
-(defn index-accum-memory [seen accum-mem]
+    (->> accum-mem
+         (reduce-kv (fn [m node-id bindings-map]
+                      (assoc! m node-id (update-vals bindings-map
+                                                     #(index-update-bindings-map node-id %))))
+                    (transient {}))
+         persistent!)))
+
+(defn index-accum-memory [seen accum-results accum-mem]
   (update-accum-memory-index #(find-or-create-mem-idx seen %)
+                             (fn [node-id _ res]
+                               (find-or-create-mem-idx accum-results res true)
+                               ::needs-reduced)
                              accum-mem))
 
-(defn unindex-accum-memory [indexed accum-mem]
+(defn unindex-accum-memory [node-id->accumulator indexed accum-results accum-mem]
   (update-accum-memory-index #(nth indexed (:idx %))
+                             (fn [node-id facts _]
+                               (let [{:keys [initial-value reduce-fn]} (node-id->accumulator node-id)
+                                     res (reduce reduce-fn initial-value facts)]
+                                 (vswap! accum-results conj res)
+                                 res))
                              accum-mem))
 
 (defn- update-beta-memory-index [index-update-fn bmem]
@@ -424,11 +466,11 @@
     (update-vals bmem
                  #(update-vals % index-update-tokens))))
 
-(defn index-beta-memory [seen bmem]
-  (update-beta-memory-index #(index-token seen %) bmem))
+(defn index-beta-memory [seen accum-results bmem]
+  (update-beta-memory-index #(index-token seen accum-results %) bmem))
 
-(defn unindex-beta-memory [indexed bmem]
-  (update-beta-memory-index #(unindex-token indexed %) bmem))
+(defn unindex-beta-memory [indexed accum-results bmem]
+  (update-beta-memory-index #(unindex-token indexed accum-results %) bmem))
 
 (defn update-production-memory-index [index-update-fact-fn
                                       index-update-token-fn
@@ -444,14 +486,17 @@
                                    (transient {}))
                         persistent!)))))
 
-(defn index-production-memory [seen pmem]
-  (update-production-memory-index #(find-or-create-mem-idx seen %)
-                                  #(index-token seen %)
+(defn index-production-memory [seen accum-results pmem]
+  (update-production-memory-index #(or (find-item-idx % accum-results true)
+                                       (find-or-create-mem-idx seen %))
+                                  #(index-token seen accum-results %)
                                   pmem))
 
-(defn unindex-production-memory [indexed pmem]
-  (update-production-memory-index #(nth indexed (:idx %))
-                                  #(unindex-token indexed %)
+(defn unindex-production-memory [indexed accum-results pmem]
+  (update-production-memory-index #(if (instance? AccumResultMemIdx %)
+                                     (nth accum-results (:idx %))
+                                     (nth indexed (:idx %)))
+                                  #(unindex-token indexed accum-results %)
                                   pmem))
 
 (defn- update-activation-map-index [index-update-fn actmap]
@@ -463,30 +508,51 @@
                                                      (.-rule-load-order act)))
                       %)))
 
-(defn index-activation-map [seen actmap]
-  (update-activation-map-index #(index-token seen %) actmap))
+(defn index-activation-map [seen accum-results actmap]
+  (update-activation-map-index #(index-token seen accum-results %) actmap))
 
-(defn unindex-activation-map [indexed actmap]
-  (update-activation-map-index #(unindex-token indexed %) actmap))
+(defn unindex-activation-map [indexed accum-results actmap]
+  (update-activation-map-index #(unindex-token indexed accum-results %) actmap))
 
 (defn index-memory [memory]
   (let [seen (volatile! [])
-        indexed (-> memory
+
+        ;; Only mutable during conversion of the :accumulate-memory.
+        accum-results (volatile! [])
+        memory (-> memory
                     (update :alpha-memory #(index-alpha-memory seen %))
-                    (update :accum-memory #(index-accum-memory seen %))
-                    (update :beta-memory #(index-beta-memory seen %))
-                    (update :production-memory #(index-production-memory seen %))
-                    (update :activation-map #(index-activation-map seen %)))]
+                    (update :accum-memory #(index-accum-memory seen accum-results %)))
+        accum-results @accum-results
+
+        indexed (-> memory
+                    (update :beta-memory #(index-beta-memory seen accum-results %))
+                    (update :production-memory #(index-production-memory seen accum-results %))
+                    (update :activation-map #(index-activation-map seen accum-results %)))]
+
     {:memory indexed
      :indexed-facts @seen}))
 
-(defn unindex-memory [indexed-facts memory]
-  (-> memory
-      (update :alpha-memory #(unindex-alpha-memory indexed-facts %))
-      (update :accum-memory #(unindex-accum-memory indexed-facts %))
-      (update :beta-memory #(unindex-beta-memory indexed-facts %))
-      (update :production-memory #(unindex-production-memory indexed-facts %))
-      (update :activation-map #(unindex-activation-map indexed-facts %))))
+(defn unindex-memory [indexed-facts rulebase memory]
+  (let [;; Needed to replay accumulator results...
+        node-id->accumulator
+        (into {}
+              (comp (filter (comp #(or (instance? AccumulateNode %)
+                                       (instance? AccumulateWithJoinFilterNode %))
+                                  val))
+                    (map (fn [[node-id node]] [node-id (:accumulator node)])))
+              (:id-to-node rulebase))
+
+        ;; Only mutable during conversion of the :accumulate-memory.
+        accum-results (volatile! [])
+        memory (-> memory
+                   (update :alpha-memory #(unindex-alpha-memory indexed-facts %))
+                   (update :accum-memory #(unindex-accum-memory node-id->accumulator indexed-facts accum-results %)))
+        accum-results @accum-results]
+
+    (-> memory
+        (update :beta-memory #(unindex-beta-memory indexed-facts accum-results %))
+        (update :production-memory #(unindex-production-memory indexed-facts accum-results %))
+        (update :activation-map #(unindex-activation-map indexed-facts accum-results %)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; New API via 2 protocol approach
@@ -590,7 +656,7 @@
         listeners (or listeners [])
         get-alphas-fn (:get-alphas-fn opts)
         memory (-> mem-facts
-                   (unindex-memory (:memory session-state))
+                   (unindex-memory rulebase (:memory session-state))
                    ;; Memory currently maintains its own reference to the rulebase.  This was removed when serializing, but should be put back now.
                    (assoc :rulebase rulebase)
                    (merge memory-opts)
