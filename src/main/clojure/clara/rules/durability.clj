@@ -317,15 +317,51 @@
 (defrecord MemIdx [idx])
 (defrecord AccumResultMemIdx [idx])
 
-(defn find-item-idx
-  ([item coll] (find-item-idx item coll false))
-  ([item coll accum-result?]
-   (let [n (count coll)]
-     (loop [i 0]
-       (when (< i n)
-         (if (identical? item (nth coll i))
-           (if accum-result? (->AccumResultMemIdx i) (->MemIdx i))
-           (recur (inc i))))))))
+(defn find-index
+  [^java.util.Map fact->index-map fact]
+  (.get fact->index-map fact))
+
+(defn- find-index-or-add!
+  ([^java.util.Map fact->index-map fact]
+   (find-index-or-add! fact->index-map fact false))
+  ([^java.util.Map fact->index-map fact accum-result?]
+   (or (.get fact->index-map fact)
+       (let [n (.size fact->index-map)
+             idx (if accum-result?
+                   (->AccumResultMemIdx n)
+                   (->MemIdx n))]
+         (.put fact->index-map fact idx)
+         idx))))
+
+(defn vec-indexed-facts [^java.util.Map fact->index-map]
+  (let [^"[Ljava.lang.Object;" arr (make-array Object (.size fact->index-map))
+        es (.entrySet fact->index-map)
+        it (.iterator es)]
+    (when (.hasNext it)
+      (loop [^java.util.Map$Entry e (.next it)]
+        (aset arr (:idx (.getValue e)) ^Object (.getKey e))
+        (when (.hasNext it)
+          (recur (.next it)))))
+    (into [] arr)))
+
+;; (defn find-item-idx
+;;   ([item coll] (find-item-idx item coll false))
+;;   ([item coll accum-result?]
+;;    (let [n (count coll)]
+;;      (loop [i 0]
+;;        (when (< i n)
+;;          (if (identical? item (nth coll i))
+;;            (if accum-result? (->AccumResultMemIdx i) (->MemIdx i))
+;;            (recur (inc i))))))))
+
+;; (defn- find-or-create-mem-idx
+;;   ([seen fact] (find-or-create-mem-idx seen fact false))
+;;   ([seen fact accum-result?]
+;;    (or (find-item-idx fact @seen accum-result?)
+;;        (do (vswap! seen conj fact)
+;;            (if accum-result?
+;;              (->AccumResultMemIdx (dec (count @seen)))
+;;              (->MemIdx (dec (count @seen))))))))
 
 ;;; TODO Share from clara.rules.memory?
 ;;; TODO is it faster to start from an empty map or from a transient copy of m?
@@ -341,8 +377,8 @@
    (index-bindings seen nil bindings))
   ([seen accum-results bindings]
    (update-vals bindings
-                #(or (when accum-results (find-item-idx % accum-results true))
-                     (find-item-idx % @seen)
+                #(or (when accum-results (find-index accum-results %))
+                     (find-index seen %)
                      %))))
 
 (defn- unindex-bindings
@@ -360,21 +396,12 @@
                    :else
                    %))))
 
-(defn- find-or-create-mem-idx
-  ([seen fact] (find-or-create-mem-idx seen fact false))
-  ([seen fact accum-result?]
-   (or (find-item-idx fact @seen accum-result?)
-       (do (vswap! seen conj fact)
-           (if accum-result?
-             (->AccumResultMemIdx (dec (count @seen)))
-             (->MemIdx (dec (count @seen))))))))
-
 (defn- index-token [seen accum-results token]
   (-> token
       (update :matches
               #(mapv (fn [[fact node-id]]
-                       [(or (find-item-idx fact accum-results true)
-                            (find-or-create-mem-idx seen fact))
+                       [(or (find-index accum-results fact)
+                            (find-index-or-add! seen fact))
                         node-id])
                      %))
       (update :bindings
@@ -406,7 +433,7 @@
                  #(update-vals % index-update-elements))))
 
 (defn index-alpha-memory [seen amem]
-  (update-alpha-memory-index #(find-or-create-mem-idx seen %)
+  (update-alpha-memory-index #(find-index-or-add! seen %)
                              #(index-bindings seen %)
                              amem))
 
@@ -446,9 +473,9 @@
          persistent!)))
 
 (defn index-accum-memory [seen accum-results accum-mem]
-  (update-accum-memory-index #(find-or-create-mem-idx seen %)
+  (update-accum-memory-index #(find-index-or-add! seen %)
                              (fn [node-id _ res]
-                               (find-or-create-mem-idx accum-results res true)
+                               (find-index-or-add! accum-results res true)
                                ::needs-reduced)
                              accum-mem))
 
@@ -487,8 +514,8 @@
                         persistent!)))))
 
 (defn index-production-memory [seen accum-results pmem]
-  (update-production-memory-index #(or (find-item-idx % accum-results true)
-                                       (find-or-create-mem-idx seen %))
+  (update-production-memory-index #(or (find-index accum-results %)
+                                       (find-index-or-add! seen %))
                                   #(index-token seen accum-results %)
                                   pmem))
 
@@ -499,6 +526,7 @@
                                   #(unindex-token indexed accum-results %)
                                   pmem))
 
+;;; TODO can there be duplicate activations to share instead of copy?
 (defn- update-activation-map-index [index-update-fn actmap]
   (update-vals actmap
                #(mapv (fn [^RuleOrderedActivation act]
@@ -515,14 +543,14 @@
   (update-activation-map-index #(unindex-token indexed accum-results %) actmap))
 
 (defn index-memory [memory]
-  (let [seen (volatile! [])
+  (let [seen (java.util.IdentityHashMap.)
+        ;; Only mutable during conversion of the :accumulate-memory.  After that only used to replace
+        ;; binding values with indices to recover later.
+        accum-results (java.util.IdentityHashMap.)
 
-        ;; Only mutable during conversion of the :accumulate-memory.
-        accum-results (volatile! [])
         memory (-> memory
-                    (update :alpha-memory #(index-alpha-memory seen %))
-                    (update :accum-memory #(index-accum-memory seen accum-results %)))
-        accum-results @accum-results
+                   (update :alpha-memory #(index-alpha-memory seen %))
+                   (update :accum-memory #(index-accum-memory seen accum-results %)))
 
         indexed (-> memory
                     (update :beta-memory #(index-beta-memory seen accum-results %))
@@ -530,7 +558,7 @@
                     (update :activation-map #(index-activation-map seen accum-results %)))]
 
     {:memory indexed
-     :indexed-facts @seen}))
+     :indexed-facts (vec-indexed-facts seen)}))
 
 (defn unindex-memory [indexed-facts rulebase memory]
   (let [;; Needed to replay accumulator results...

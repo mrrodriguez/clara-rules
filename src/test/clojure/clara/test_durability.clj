@@ -292,7 +292,9 @@
 (comment ;; TESTING
   (do
     (require 'clara.rules.durability
-             'clara.test-durability)
+             'clara.test-durability
+             :reload)
+
     (def tmp (jio/file "tmp"))
     (def ss (d/->PrintDupSessionSerializer tmp tmp))
     (def ms (d/->InMemoryMemoryFactsSerializer (atom nil)))
