@@ -223,7 +223,7 @@
       node)
     node))
 
-(def print-dup-record
+(defonce print-dup-record
   (get-method print-dup clojure.lang.IRecord))
 
 (defn print-dup-node
@@ -344,25 +344,6 @@
           (recur (.next it)))))
     (into [] arr)))
 
-;; (defn find-item-idx
-;;   ([item coll] (find-item-idx item coll false))
-;;   ([item coll accum-result?]
-;;    (let [n (count coll)]
-;;      (loop [i 0]
-;;        (when (< i n)
-;;          (if (identical? item (nth coll i))
-;;            (if accum-result? (->AccumResultMemIdx i) (->MemIdx i))
-;;            (recur (inc i))))))))
-
-;; (defn- find-or-create-mem-idx
-;;   ([seen fact] (find-or-create-mem-idx seen fact false))
-;;   ([seen fact accum-result?]
-;;    (or (find-item-idx fact @seen accum-result?)
-;;        (do (vswap! seen conj fact)
-;;            (if accum-result?
-;;              (->AccumResultMemIdx (dec (count @seen)))
-;;              (->MemIdx (dec (count @seen))))))))
-
 ;;; TODO Share from clara.rules.memory?
 ;;; TODO is it faster to start from an empty map or from a transient copy of m?
 (defn- update-vals [m update-fn]
@@ -472,11 +453,13 @@
                     (transient {}))
          persistent!)))
 
+(defrecord AccumResultStub [node-id facts])
+
 (defn index-accum-memory [seen accum-results accum-mem]
   (update-accum-memory-index #(find-index-or-add! seen %)
-                             (fn [node-id _ res]
+                             (fn [node-id facts res]
                                (find-index-or-add! accum-results res true)
-                               ::needs-reduced)
+                               (->AccumResultStub node-id facts))
                              accum-mem))
 
 (defn unindex-accum-memory [node-id->accumulator indexed accum-results accum-mem]
@@ -583,42 +566,152 @@
         (update :activation-map #(unindex-activation-map indexed-facts accum-results %)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; New API via 2 protocol approach
+;;;; Serialization protocols.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defprotocol ISessionSerializer
-  (serialize [this session-state opts])
-  (deserialize [this opts]))
+  (serialize [this session opts])
+  (deserialize [this mem-facts opts]))
 
 (defprotocol IMemoryFactsSerializer
   (serialize-facts [this fact-seq opts])
   (deserialize-facts [this opts]))
 
-(defrecord PrintDupSessionSerializer [in out]
-  ISessionSerializer
-  (serialize [_ session-state opts]
-    (let [{:keys [rulebase memory indexed-facts]} session-state
-          print-dup-source (cond
-                             (:rulebase-only? opts) {:rulebase rulebase}
-                             (:with-rulebase? opts) {:memory memory
-                                                     :rulebase rulebase}
-                             :else {:memory memory})]
-      (with-open [wtr (jio/writer out)]
-        (binding [*node-id->node-cache* (volatile! {})
-                  *print-meta* true
-                  *print-dup* true
-                  *out* wtr]
-          (pr print-dup-source)
-          (flush)))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; Basic print-dup based session serializer.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-  (deserialize [_ opts]
-    (let [session-state (binding [*node-id->node-cache* (volatile! {})
-                                  *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
-                          (with-open [rdr (jio/reader in)]
-                            (-> rdr
-                                clojure.lang.LineNumberingPushbackReader.
-                                ;; One item expected in the stream.  Read it.  Fail if nothing found.
-                                read)))]
-      session-state)))
+(def ^:private ^:dynamic *mem-facts* nil)
+(def ^:private ^:dynamic *node-id->accumulator* nil)
+(def ^:private ^:dynamic *accum-results* nil)
+
+(defn find-mem-idx [idx]
+  (get *mem-facts* idx))
+
+(defn find-accum-result-mem-idx [idx]
+  (get @*accum-results* idx))
+
+(defn run-accum [accum-result-stub]
+  (let [{:keys [node-id facts]} accum-result-stub
+        {:keys [initial-value reduce-fn]} (*node-id->accumulator* node-id)
+        res (reduce reduce-fn initial-value facts)]
+    (vswap! *accum-results* conj res)
+    res))
+
+(defmethod print-dup MemIdx [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/find-mem-idx ")
+  (print-dup (:idx o) w)
+  (.write w ")"))
+
+(defmethod print-dup AccumResultStub [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/run-accum ")
+  (print-dup-record o w)
+  (.write w ")"))
+
+(defmethod print-dup AccumResultMemIdx [o ^java.io.Writer w]
+  (.write w "#=(clara.rules.durability/find-accum-result-mem-idx ")
+  (print-dup (:idx o) w)
+  (.write w ")"))
+
+(defrecord PrintDupSessionSerializer [inout]
+  ISessionSerializer
+  (serialize [_ session opts]
+    (let [{:keys [rulebase memory]} (eng/components session)
+          do-serialize (fn [print-dup-sources]
+                         (with-open [wtr (jio/writer inout)]
+                           (binding [*node-id->node-cache* (volatile! {})
+                                     *print-meta* true
+                                     *print-dup* true
+                                     *out* wtr]
+                             (doseq [prd print-dup-sources] (pr prd))
+                             (flush))))]
+
+      ;; In this case there is nothing to do with memory, so just serialize immediately.
+      (if (:rulebase-only? opts)
+        (do-serialize [rulebase])
+
+        ;; Otherwise memory needs to have facts extracted to return.
+        (let [imem (index-memory memory)
+              ;; Technically the rulebase is in memory too currently.
+              session-state (-> imem
+                                (assoc :rulebase rulebase)
+                                (dissoc :indexed-facts)
+                                (update :memory
+                                        dissoc
+                                        ;; The rulebase does need to be stored per memory.  It will be restored during deserialization.
+                                        :rulebase
+                                        ;; Currently these do not support serialization and must be provided during deserialization via a
+                                        ;; base-session or they default to the standard defaults.
+                                        :activation-group-sort-fn
+                                        :activation-group-fn
+                                        :alphas-fn))
+              memory (:memory session-state)
+              print-dup-sources (cond
+                                  (:with-rulebase? opts) [rulebase memory]
+                                  :else [memory])]
+
+          (do-serialize print-dup-sources)
+
+          ;; Return the facts needing to be serialized still.
+          (:indexed-facts imem)))))
+
+  (deserialize [_ mem-facts opts]
+    (with-open [rdr (clojure.lang.LineNumberingPushbackReader. (jio/reader inout))]
+      (let [{:keys [rulebase-only? base-rulebase listeners transport]} opts
+            ;; The rulebase should either be given from the base-session or found in
+            ;; the restored session-state.
+            rulebase (or base-rulebase
+                         (binding [*node-id->node-cache* (volatile! {})
+                                   *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
+                           (read rdr)))]
+        (if rulebase-only?
+          rulebase
+
+          (let [opts (-> opts
+                         (assoc :rulebase rulebase)
+                         ;; Right now activation fns do not serialize.
+                         (update :activation-group-sort-fn
+                                 #(eng/options->activation-group-sort-fn {:activation-group-sort-fn %}))
+                         (update :activation-group-fn
+                                 #(eng/options->activation-group-fn {:activation-group-fn %}))
+                         ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
+                         (update :get-alphas-fn
+                                 #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
+
+                memory-opts (select-keys opts
+                                         #{:rulebase
+                                           :activation-group-sort-fn
+                                           :activation-group-fn
+                                           :get-alphas-fn})
+
+                transport (or transport (clara.rules.engine.LocalTransport.))
+                listeners (or listeners [])
+                get-alphas-fn (:get-alphas-fn opts)
+
+                accum-node? #(or (instance? AccumulateNode %)
+                                 (instance? AccumulateWithJoinFilterNode %))
+
+                node-id->accumulator (into {}
+                                           (comp (filter (comp accum-node? val))
+                                                 (map (fn [[node-id node]] [node-id (:accumulator node)])))
+                                           (:id-to-node rulebase))
+
+                memory (-> (binding [*node-id->accumulator* node-id->accumulator
+                                     *mem-facts* mem-facts
+                                     *accum-results* (volatile! [])]
+                             (read rdr))
+                           ;; Memory currently maintains its own reference to the rulebase.  This was removed when serializing, but should be put back now.
+                           (assoc :rulebase rulebase)
+                           (merge memory-opts)
+                           ;; Naming difference for some reason.
+                           (set/rename-keys {:get-alphas-fn :alphas-fn})
+                           mem/map->PersistentLocalMemory)]
+
+            (eng/assemble {:rulebase rulebase
+                           :memory memory
+                           :transport transport
+                           :listeners listeners
+                           :get-alphas-fn get-alphas-fn})))))))
 
 (defrecord InMemoryMemoryFactsSerializer [holder]
   IMemoryFactsSerializer
@@ -628,152 +721,21 @@
     @holder))
 
 (defn serialize-rulebase [session session-serializer opts]
-  (let [cs (eng/components session)]
-    (serialize session-serializer (select-keys cs #{:rulebase}) (assoc opts :rulebase-only? true))))
+  (serialize session-serializer
+             session
+             (assoc opts :rulebase-only? true)))
 
 (defn deserialize-rulebase [session-serializer opts]
-  (:rulebase (deserialize session-serializer (assoc opts :rulebase-only? true))))
+  (deserialize session-serializer
+               nil
+               (assoc opts :rulebase-only? true)))
 
 (defn serialize-session-state [session session-serializer memory-facts-serializer opts]
-  (let [{:keys [rulebase memory]} (eng/components session)
-        imem (index-memory memory)
-        ;; Technically the rulebase is in memory too currently.
-        session-state (-> imem
-                          (assoc :rulebase rulebase)
-                          (dissoc :indexed-facts)
-                          (update :memory
-                                  dissoc
-                                  ;; The rulebase does need to be stored per memory.  It will be restored during deserialization.
-                                  :rulebase
-                                  ;; Currently these do not support serialization and must be provided during deserializtion via a
-                                  ;; base-session or they default to the standard defaults.
-                                  :activation-group-sort-fn
-                                  :activation-group-fn
-                                  :alphas-fn))]
-    (serialize-facts memory-facts-serializer (:indexed-facts imem) opts)
-    (serialize session-serializer session-state opts)))
+  (serialize-facts memory-facts-serializer
+                   (serialize session-serializer session opts)
+                   opts))
 
 (defn deserialize-session-state [session-serializer memory-facts-serializer opts]
-  (let [;; Deserialize the session along with working memory facts.
-        session-state (deserialize session-serializer opts)
-        mem-facts (deserialize-facts memory-facts-serializer opts)
-
-        {:keys [base-rulebase listeners transport]} opts
-        ;; The rulebase should either be given from the base-session or found in
-        ;; the restored session-state.
-        rulebase (or base-rulebase
-                     (:rulebase session-state))
-        opts (-> opts
-                 (assoc :rulebase rulebase)
-                 ;; Right now activation fns do not serialize.
-                 (update :activation-group-sort-fn
-                         #(eng/options->activation-group-sort-fn {:activation-group-sort-fn %}))
-                 (update :activation-group-fn
-                         #(eng/options->activation-group-fn {:activation-group-fn %}))
-                 ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
-                 (update :get-alphas-fn
-                         #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
-
-        memory-opts (select-keys opts
-                                 #{:rulebase
-                                   :activation-group-sort-fn
-                                   :activation-group-fn
-                                   :get-alphas-fn})
-
-        transport (or transport (clara.rules.engine.LocalTransport.))
-        listeners (or listeners [])
-        get-alphas-fn (:get-alphas-fn opts)
-        memory (-> mem-facts
-                   (unindex-memory rulebase (:memory session-state))
-                   ;; Memory currently maintains its own reference to the rulebase.  This was removed when serializing, but should be put back now.
-                   (assoc :rulebase rulebase)
-                   (merge memory-opts)
-                   ;; Naming difference for some reason.
-                   (set/rename-keys {:get-alphas-fn :alphas-fn})
-                   mem/map->PersistentLocalMemory)]
-
-    (eng/assemble {:rulebase rulebase
-                   :memory memory
-                   :transport transport
-                   :listeners listeners
-                   :get-alphas-fn get-alphas-fn})))
-
-;;;; Store and restore functions.
-
-(defn store-rulebase-state-to [session out]
-  (let [{:keys [rulebase]} (eng/components session)]
-    (binding [*node-id->node-cache* (volatile! {})
-              *print-meta* true
-              *print-dup* true
-              *out* (jio/writer out)]
-      (pr {:rulebase rulebase})
-      (flush))))
-
-(defn store-session-state-to [session out opts]
-  (let [{:keys [rulebase memory]} (eng/components session)
-        memory-state (select-keys memory
-                                  #{:alpha-memory
-                                    :beta-memory
-                                    :accum-memory
-                                    :production-memory
-                                    :activation-map})
-        to-store (cond-> {:memory memory-state}
-                   (:with-rulebase? opts) (assoc :rulebase rulebase))]
-    (binding [*node-id->node-cache* (volatile! {})
-              *print-meta* true
-              *print-dup* true
-              *out* (jio/writer out)]
-      (pr to-store)
-      (flush))))
-
-(defn restore-rulebase-state-from [in]
-  (binding [*node-id->node-cache* (volatile! {})
-            *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
-    (-> in
-        jio/reader
-        clojure.lang.LineNumberingPushbackReader.
-        ;; One item expected in the stream.  Read it.  Fail if nothing found.
-        read
-        :rulebase)))
-
-(defn restore-session-state-from [in opts]
-  (let [{:keys [base-session listeners transport]} opts
-        session-state (binding [*node-id->node-cache* (volatile! {})
-                                *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
-                        (-> in
-                            jio/reader
-                            clojure.lang.LineNumberingPushbackReader.
-                            ;; One item expected in the stream.  Read it.  Fail if nothing found.
-                            read))
-        ;; The rulebase should either be given from the base-session or found in
-        ;; the restored session-state.
-        rulebase (or (some-> base-session eng/components :rulebase)
-                     (:rulebase session-state))
-        opts (-> opts
-                 (assoc :rulebase rulebase)
-                 ;; Right now activation fns do not serialize.
-                 (update :activation-group-sort-fn
-                         #(eng/options->activation-group-sort-fn {:activation-group-sort-fn %}))
-                 (update :activation-group-fn
-                         #(eng/options->activation-group-fn {:activation-group-fn %}))
-                 ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
-                 (update :get-alphas-fn
-                         #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
-        memory-opts (select-keys opts
-                                 #{:rulebase
-                                   :activation-group-sort-fn
-                                   :activation-group-fn
-                                   :get-alphas-fn})
-        transport (or transport (clara.rules.engine.LocalTransport.))
-        listeners (or listeners [])
-        get-alphas-fn (:get-alphas-fn opts)
-        memory (-> (:memory session-state)
-                   (merge memory-opts)
-                   ;; Naming difference for some reason.
-                   (set/rename-keys {:get-alphas-fn :alphas-fn})
-                   mem/map->PersistentLocalMemory)]
-    (eng/assemble {:rulebase rulebase
-                   :memory memory
-                   :transport transport
-                   :listeners listeners
-                   :get-alphas-fn get-alphas-fn})))
+  (deserialize session-serializer
+               (deserialize-facts memory-facts-serializer opts)
+               opts))
