@@ -613,12 +613,12 @@
   (print-dup (:idx o) w)
   (.write w ")"))
 
-(defrecord PrintDupSessionSerializer [inout]
+(defrecord PrintDupSessionSerializer [in-stream out-stream]
   ISessionSerializer
   (serialize [_ session opts]
     (let [{:keys [rulebase memory]} (eng/components session)
           do-serialize (fn [print-dup-sources]
-                         (with-open [wtr (jio/writer inout)]
+                         (with-open [wtr (jio/writer in-stream)]
                            (binding [*node-id->node-cache* (volatile! {})
                                      *print-meta* true
                                      *print-dup* true
@@ -656,7 +656,7 @@
           (:indexed-facts imem)))))
 
   (deserialize [_ mem-facts opts]
-    (with-open [rdr (clojure.lang.LineNumberingPushbackReader. (jio/reader inout))]
+    (with-open [rdr (clojure.lang.LineNumberingPushbackReader. (jio/reader out-stream))]
       (let [{:keys [rulebase-only? base-rulebase listeners transport]} opts
             ;; The rulebase should either be given from the base-session or found in
             ;; the restored session-state.
@@ -713,6 +713,7 @@
                            :listeners listeners
                            :get-alphas-fn get-alphas-fn})))))))
 
+;;; TODO remove?
 (defrecord InMemoryMemoryFactsSerializer [holder]
   IMemoryFactsSerializer
   (serialize-facts [this fact-seq opts]
@@ -720,22 +721,43 @@
   (deserialize-facts [_ opts]
     @holder))
 
-(defn serialize-rulebase [session session-serializer opts]
-  (serialize session-serializer
-             session
-             (assoc opts :rulebase-only? true)))
+(defn create-default-session-serializer
+  ([in+out-stream]
+   (create-default-session-serializer in+out-stream in+out-stream))
+  ([in-stream out-stream]
+   (->PrintDupSessionSerializer in-stream out-stream)))
 
-(defn deserialize-rulebase [session-serializer opts]
-  (deserialize session-serializer
-               nil
-               (assoc opts :rulebase-only? true)))
+(defn serialize-rulebase
+  ([session session-serializer]
+   (serialize-rulebase session
+                       session-serializer))
+  ([session session-serializer opts]
+   (serialize session-serializer
+              session
+              (assoc opts :rulebase-only? true))))
 
-(defn serialize-session-state [session session-serializer memory-facts-serializer opts]
-  (serialize-facts memory-facts-serializer
-                   (serialize session-serializer session opts)
-                   opts))
+(defn deserialize-rulebase
+  ([session-serializer]
+   (deserialize-rulebase session-serializer))
+  ([session-serializer opts]
+   (deserialize session-serializer
+                nil
+                (assoc opts :rulebase-only? true))))
 
-(defn deserialize-session-state [session-serializer memory-facts-serializer opts]
-  (deserialize session-serializer
-               (deserialize-facts memory-facts-serializer opts)
-               opts))
+(defn serialize-session-state
+  ([session session-serializer memory-facts-serializer]
+   (serialize-session-state session session-serializer memory-facts-serializer nil))
+  ([session session-serializer memory-facts-serializer opts]
+   (serialize-facts memory-facts-serializer
+                    (serialize session-serializer session opts)
+                    opts)))
+
+(defn deserialize-session-state
+  ([session-serializer memory-facts-serializer]
+   (deserialize-session-state session-serializer
+                              memory-facts-serializer
+                              nil))
+  ([session-serializer memory-facts-serializer opts]
+   (deserialize session-serializer
+                (deserialize-facts memory-facts-serializer opts)
+                opts)))
