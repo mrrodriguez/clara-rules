@@ -1561,6 +1561,10 @@
   []
   (reset! session-cache {}))
 
+(defn production-load-order-comp [a b]
+  (< (-> a meta ::rule-load-order)
+     (-> b meta ::rule-load-order)))
+
 (sc/defn mk-session*
   "Compile the rules into a rete network and return the given session."
   [productions :- #{schema/Production}
@@ -1574,10 +1578,10 @@
         ;;
         ;; Note that this ordering is not for correctness; we are just trying to increase consistency of rulebase compilation,
         ;; and hopefully thereby execution times, from run to run.
-        productions (into (sorted-set-by (fn [a b]
-                                           (< (-> a meta ::rule-load-order)
-                                              (-> b meta ::rule-load-order))))
-                          productions)
+        productions (with-meta (into (sorted-set-by production-load-order-comp)
+                                     productions)
+                      ;; Store the name of the custom comparator for durability.
+                      {:print-dup/comparator-name `production-load-order-comp})
         beta-graph (to-beta-graph productions)
         beta-tree (compile-beta-graph beta-graph)
         beta-root-ids (-> beta-graph :forward-edges (get 0)) ; 0 is the id of the virtual root node.

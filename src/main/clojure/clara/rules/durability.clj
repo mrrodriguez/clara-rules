@@ -598,6 +598,38 @@
     (vswap! *accum-results* conj res)
     res))
 
+;;;; To deal with http://dev.clojure.org/jira/browse/CLJ-1733 we need to impl print-dup on
+;;;; sorted sets and maps.  However, this is not sufficient for arbitrary comparators.  If
+;;;; arbitrary comparators are used for the sorted coll, the comparator has to be restored
+;;;; explicitly since arbitrary functions are not serializable in any stable way right now.
+
+(defn- print-dup-sorted [create-fn-str seq-fn ^clojure.lang.Sorted s ^java.io.Writer w]
+  (let [cname (-> s meta :print-dup/comparator-name)]
+
+    ;; Fail if reliable serialization of this sorted coll isn't possible.
+    (when (and (not cname)
+               (not= (.comparator s) clojure.lang.RT/DEFAULT_COMPARATOR))
+      (throw (ex-info (str "Cannot serialize (via print-dup) sorted collection with non-default"
+                           " comparator because no :print-dup/comparator-name provided in metadata.")
+                      {:sorted-coll s
+                       :comparator (.comparator s)})))
+    
+    (.write w (str "#=(" create-fn-str " "))
+    (when cname
+      (.write w "#=(deref ")
+      (print-dup (resolve cname) w)
+      (.write w ") "))
+    ;; The seq of a sorted coll may returns entry types that do not have a valid print-dup
+    ;; representation.  To workaround that, replace them all with 2 item vectors instead.
+    (print-dup (seq-fn s) w)
+    (.write w ")")))
+
+(defmethod print-dup clojure.lang.PersistentTreeSet [o ^java.io.Writer w]
+  (print-dup-sorted "clojure.lang.PersistentTreeSet/create" seq o w))
+
+(defmethod print-dup clojure.lang.PersistentTreeMap [o ^java.io.Writer w]
+  (print-dup-sorted "clojure.lang.PersistentTreeMap/create" #(sequence cat %) o w))
+
 (defmethod print-dup MemIdx [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/find-mem-idx ")
   (print-dup (:idx o) w)
