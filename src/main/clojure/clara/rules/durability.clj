@@ -34,7 +34,8 @@
             AccumulateNode
             AccumulateWithJoinFilterNode]))
 (def holder (atom {}))
-(defmacro dbgd [x] `(let [x# ~x] (println '~x) (prn x#) (swap! holder assoc '~x x#) x#))
+(def times (atom 0))
+(defmacro dbgd [x] `(let [x# ~x] (when (< @times 40) (println '~x) (prn x#)) (swap! times inc) (swap! holder assoc '~x x#) x#))
 (println "COMPILING DURABILITY AGAIN")
 
 ;; A schema representing a minimal representation of a rule session's state.
@@ -377,6 +378,16 @@
                    :else
                    %))))
 
+(defn- index-update-bindings-keys [index-update-bindings-fn
+                                   bindings-map]
+  (persistent!
+   (reduce-kv (fn [m k v]
+                (assoc! m
+                        (index-update-bindings-fn k)
+                        v))
+              (transient {})
+              bindings-map)))
+
 (defn- index-token [seen accum-results token]
   (-> token
       (update :matches
@@ -411,7 +422,8 @@
                                                    index-update-bindings-fn))
                                       elements))]
     (update-vals amem
-                 #(update-vals % index-update-elements))))
+                 #(-> (index-update-bindings-keys index-update-bindings-fn %)
+                      (update-vals index-update-elements)))))
 
 (defn index-alpha-memory [seen amem]
   (update-alpha-memory-index #(find-index-or-add! seen %)
@@ -424,6 +436,7 @@
                              amem))
 
 (defn- update-accum-memory-index [index-update-fn
+                                  index-update-bindings-fn
                                   accum-result-update-fn
                                   accum-mem]
   (let [index-facts #(mapv index-update-fn %)
@@ -444,12 +457,13 @@
                                          (with-meta (index-facts accum-reduced)
                                            m))))
         index-update-bindings-map (fn [node-id bindings-map]
-                                    (update-vals bindings-map #(index-update-accum-reduced node-id %)))]
+                                    (-> (index-update-bindings-keys index-update-bindings-fn bindings-map)
+                                        (update-vals #(index-update-accum-reduced node-id %))))]
 
     (->> accum-mem
          (reduce-kv (fn [m node-id bindings-map]
-                      (assoc! m node-id (update-vals bindings-map
-                                                     #(index-update-bindings-map node-id %))))
+                      (assoc! m node-id (-> (index-update-bindings-keys index-update-bindings-fn bindings-map)
+                                            (update-vals #(index-update-bindings-map node-id %)))))
                     (transient {}))
          persistent!)))
 
@@ -457,6 +471,7 @@
 
 (defn index-accum-memory [seen accum-results accum-mem]
   (update-accum-memory-index #(find-index-or-add! seen %)
+                             #(index-bindings seen accum-results %)
                              (fn [node-id facts res]
                                (find-index-or-add! accum-results res true)
                                (->AccumResultStub node-id facts))
@@ -464,6 +479,7 @@
 
 (defn unindex-accum-memory [node-id->accumulator indexed accum-results accum-mem]
   (update-accum-memory-index #(nth indexed (:idx %))
+                             #(unindex-bindings indexed accum-results %)
                              (fn [node-id facts _]
                                (let [{:keys [initial-value reduce-fn]} (node-id->accumulator node-id)
                                      res (reduce reduce-fn initial-value facts)]
@@ -471,16 +487,23 @@
                                  res))
                              accum-mem))
 
-(defn- update-beta-memory-index [index-update-fn bmem]
+(defn- update-beta-memory-index [index-update-fn
+                                 index-update-bindings-fn
+                                 bmem]
   (let [index-update-tokens #(mapv index-update-fn %)]
     (update-vals bmem
-                 #(update-vals % index-update-tokens))))
+                 #(-> (index-update-bindings-keys index-update-bindings-fn %)
+                      (update-vals index-update-tokens)))))
 
 (defn index-beta-memory [seen accum-results bmem]
-  (update-beta-memory-index #(index-token seen accum-results %) bmem))
+  (update-beta-memory-index #(index-token seen accum-results %)
+                            #(index-bindings seen accum-results %)
+                            bmem))
 
 (defn unindex-beta-memory [indexed accum-results bmem]
-  (update-beta-memory-index #(unindex-token indexed accum-results %) bmem))
+  (update-beta-memory-index #(unindex-token indexed accum-results %)
+                            #(unindex-bindings indexed accum-results %)
+                            bmem))
 
 (defn update-production-memory-index [index-update-fact-fn
                                       index-update-token-fn
@@ -531,14 +554,12 @@
         ;; binding values with indices to recover later.
         accum-results (java.util.IdentityHashMap.)
 
-        memory (-> memory
-                   (update :alpha-memory #(index-alpha-memory seen %))
-                   (update :accum-memory #(index-accum-memory seen accum-results %)))
-
         indexed (-> memory
-                    (update :beta-memory #(index-beta-memory seen accum-results %))
-                    (update :production-memory #(index-production-memory seen accum-results %))
-                    (update :activation-map #(index-activation-map seen accum-results %)))]
+                   (update :accum-memory #(index-accum-memory seen accum-results %))
+                   (update :alpha-memory #(index-alpha-memory seen %))
+                   (update :beta-memory #(index-beta-memory seen accum-results %))
+                   (update :production-memory #(index-production-memory seen accum-results %))
+                   (update :activation-map #(index-activation-map seen accum-results %)))]
 
     {:memory indexed
      :indexed-facts (vec-indexed-facts seen)}))
