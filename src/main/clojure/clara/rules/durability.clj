@@ -231,7 +231,7 @@
 (def ^:private print-map @#'clojure.core/print-map)
 
 (def ^:private ^:dynamic *cached-records?* false)
-(def ^:private ^:dynamic *clj-record-holder* nil)
+(def ^:private ^:dynamic ^java.util.Map *clj-record-holder* nil)
 
 (defn clj-record-id->fact [id]
   (.get *clj-record-holder* id))
