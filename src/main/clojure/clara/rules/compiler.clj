@@ -1585,7 +1585,7 @@
         productions (with-meta (into (sorted-set-by production-load-order-comp)
                                      productions)
                       ;; Store the name of the custom comparator for durability.
-                      {:print-dup/comparator-name `production-load-order-comp})
+                      {:print-method/comparator-name `production-load-order-comp})
         beta-graph (to-beta-graph productions)
         beta-tree (compile-beta-graph beta-graph)
         beta-root-ids (-> beta-graph :forward-edges (get 0)) ; 0 is the id of the virtual root node.

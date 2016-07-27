@@ -15,6 +15,7 @@
             [clara.rules.memory :as mem]
             [clojure.java.io :as jio]
             [clojure.set :as set]
+            [clojure.main :as cm]
             [schema.core :as s]
             [schema.macros :as sm])
 
@@ -32,7 +33,9 @@
             NegationWithJoinFilterNode
             TestNode
             AccumulateNode
-            AccumulateWithJoinFilterNode]))
+            AccumulateWithJoinFilterNode]
+           [java.util
+            IdentityHashMap]))
 (def holder (atom {}))
 (def times (atom 0))
 (defmacro dbgd [x] `(let [x# ~x] (when (< @times 40) (println '~x) (prn x#)) (swap! times inc) (swap! holder assoc '~x x#) x#))
@@ -182,7 +185,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
-;;;; Rulebase print-dup impl's.
+;;;; Rulebase print-method impl's.
 
 (def ^:dynamic *node-id->node-cache* nil)
 
@@ -224,12 +227,49 @@
       node)
     node))
 
-(defonce print-dup-record
-  (get-method print-dup clojure.lang.IRecord))
+(def ^:private print-meta @#'clojure.core/print-meta)
+(def ^:private print-map @#'clojure.core/print-map)
 
-(defn print-dup-node
+(def ^:private ^:dynamic *cached-records?* false)
+(def ^:private ^:dynamic *clj-record-holder* nil)
+
+(defn clj-record-id->fact [id]
+  (.get *clj-record-holder* id))
+
+(defn clj-record-fact-holder-add! [x]
+  (.put *clj-record-holder* x (.size *clj-record-holder*))
+  x)
+
+(defn print-method-record [o ^java.io.Writer w]
+  (let [print-record (fn []
+                       (let [class-name (-> o class .getName)
+                             idx (.lastIndexOf class-name (int \.))
+                             ns-nom (.substring class-name 0 idx)
+                             nom (.substring class-name (inc idx))
+                             builder-name (symbol (str (cm/demunge ns-nom) "/map->" (cm/demunge nom)))]
+                         (print-meta o w)
+                         (.write w (str "#=(" builder-name))
+                         (print-map o print-method w)
+                         (.write w ")")))]
+
+    (if *cached-records?*
+      (if-let [idx (some-> *clj-record-holder* (.get o))]
+        (do
+          (.write w "#=(clara.rules.durability/clj-record-id->fact ")
+          (print-method idx w)
+          (.write w ")"))
+        
+        (do
+          (.write w "#=(clara.rules.durability/clj-record-fact-holder-add! ")
+          (print-record)
+          (.write w ")")
+          
+          (.put *clj-record-holder* o (.size *clj-record-holder*))))
+      (print-record))))
+
+(defn print-method-node
   ([node ^java.io.Writer w]
-   (print-dup-node nil node nil w))
+   (print-method-node nil node nil w))
   ([^String header
     node
     ^String footer
@@ -238,76 +278,79 @@
      (if (@*node-id->node-cache* node-id)
        (do
          (.write w "#=(clara.rules.durability/node-id->node ")
-         (print-dup node-id w)
+         (print-method node-id w)
          (.write w ")"))
        (do
          (cache-node node)
          (vswap! *node-id->node-cache* assoc node-id node)
          (.write w "#=(clara.rules.durability/cache-node ")
          (when header (.write w header))
-         (print-dup-record node w)
+         (print-method-record node w)
          (when footer (.write w footer))
          (.write w ")")
          )))))
 
 (defn- write-join-filter-node [node ^java.io.Writer w]
-  (print-dup-node "#=(clara.rules.durability/add-join-filter-fn "
+  (print-method-node "#=(clara.rules.durability/add-join-filter-fn "
                   (assoc node :join-filter-fn nil)
                   ")"
                   w))
 
-(defmethod print-dup ProductionNode [o ^java.io.Writer w]
-  (print-dup-node "#=(clara.rules.durability/add-rhs-fn "
-                  (assoc o :rhs nil)
-                  ")"
-                  w))
+(defmethod print-method clojure.lang.IRecord [o ^java.io.Writer w]
+  (print-method-record o w))
 
-(defmethod print-dup QueryNode [o ^java.io.Writer w]
-  (print-dup-node o w))
+(defmethod print-method ProductionNode [o ^java.io.Writer w]
+  (print-method-node "#=(clara.rules.durability/add-rhs-fn "
+                     (assoc o :rhs nil)
+                     ")"
+                     w))
 
-(defmethod print-dup AlphaNode [o ^java.io.Writer w]
+(defmethod print-method QueryNode [o ^java.io.Writer w]
+  (print-method-node o w))
+
+(defmethod print-method AlphaNode [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/add-alpha-fn ")
   ;; AlphaNode's do not have an :id
-  (print-dup-record (assoc o :activation nil) w)
+  (print-method-record (assoc o :activation nil) w)
   (.write w ")"))
 
-(defmethod print-dup RootJoinNode [o ^java.io.Writer w]
-  (print-dup-node o w))
+(defmethod print-method RootJoinNode [o ^java.io.Writer w]
+  (print-method-node o w))
 
-(defmethod print-dup HashJoinNode [o ^java.io.Writer w]
-  (print-dup-node o w))
+(defmethod print-method HashJoinNode [o ^java.io.Writer w]
+  (print-method-node o w))
 
-(defmethod print-dup ExpressionJoinNode [o ^java.io.Writer w]
+(defmethod print-method ExpressionJoinNode [o ^java.io.Writer w]
   (write-join-filter-node o w))
 
-(defmethod print-dup NegationNode [o ^java.io.Writer w]
-  (print-dup-node o w))
+(defmethod print-method NegationNode [o ^java.io.Writer w]
+  (print-method-node o w))
 
-(defmethod print-dup NegationWithJoinFilterNode [o ^java.io.Writer w]
+(defmethod print-method NegationWithJoinFilterNode [o ^java.io.Writer w]
   (write-join-filter-node o w))
 
-(defmethod print-dup TestNode [o ^java.io.Writer w]
-  (print-dup-node "#=(clara.rules.durability/add-test-fn "
+(defmethod print-method TestNode [o ^java.io.Writer w]
+  (print-method-node "#=(clara.rules.durability/add-test-fn "
                   (assoc o :test nil)
                   ")"
                   w))
 
-(defmethod print-dup AccumulateNode [o ^java.io.Writer w]
-  (print-dup-node "#=(clara.rules.durability/add-accumulator "
+(defmethod print-method AccumulateNode [o ^java.io.Writer w]
+  (print-method-node "#=(clara.rules.durability/add-accumulator "
                   (assoc o :accumulator nil)
                   ")"
                   w))
 
-(defmethod print-dup AccumulateWithJoinFilterNode [o ^java.io.Writer w]
-  (print-dup-node "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn "
+(defmethod print-method AccumulateWithJoinFilterNode [o ^java.io.Writer w]
+  (print-method-node "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn "
                   (assoc o :accumulator nil :join-filter-fn nil)
                   "))"
                   w))
 
-(defmethod print-dup RuleOrderedActivation [^RuleOrderedActivation o ^java.io.Writer w]
+(defmethod print-method RuleOrderedActivation [^RuleOrderedActivation o ^java.io.Writer w]
   (.write w "#")
   (.write w (.getName (class o)))
-  (print-dup [(.-node-id o)
+  (print-method [(.-node-id o)
               (.-token o)
               (.-activation o)
               (.-rule-load-order o)]
@@ -599,7 +642,7 @@
   (deserialize-facts [this opts]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; Basic print-dup based session serializer.
+;;;; Basic print-method based session serializer.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private ^:dynamic *mem-facts* nil)
@@ -619,64 +662,67 @@
     (vswap! *accum-results* conj res)
     res))
 
-;;;; To deal with http://dev.clojure.org/jira/browse/CLJ-1733 we need to impl print-dup on
+;;;; To deal with http://dev.clojure.org/jira/browse/CLJ-1733 we need to impl print-method on
 ;;;; sorted sets and maps.  However, this is not sufficient for arbitrary comparators.  If
 ;;;; arbitrary comparators are used for the sorted coll, the comparator has to be restored
 ;;;; explicitly since arbitrary functions are not serializable in any stable way right now.
 
-(defn- print-dup-sorted [create-fn-str seq-fn ^clojure.lang.Sorted s ^java.io.Writer w]
-  (let [cname (-> s meta :print-dup/comparator-name)]
+(defn- print-method-sorted [create-fn-str seq-fn ^clojure.lang.Sorted s ^java.io.Writer w]
+  (let [cname (-> s meta :print-method/comparator-name)]
 
     ;; Fail if reliable serialization of this sorted coll isn't possible.
     (when (and (not cname)
                (not= (.comparator s) clojure.lang.RT/DEFAULT_COMPARATOR))
-      (throw (ex-info (str "Cannot serialize (via print-dup) sorted collection with non-default"
-                           " comparator because no :print-dup/comparator-name provided in metadata.")
+      (throw (ex-info (str "Cannot serialize (via print-method) sorted collection with non-default"
+                           " comparator because no :print-method/comparator-name provided in metadata.")
                       {:sorted-coll s
                        :comparator (.comparator s)})))
     
     (.write w (str "#=(" create-fn-str " "))
     (when cname
-      (.write w "#=(deref ")
-      (print-dup (resolve cname) w)
-      (.write w ") "))
-    ;; The seq of a sorted coll may returns entry types that do not have a valid print-dup
+      (.write w "#=(deref #=(var ")
+      (print-method cname w)
+      (.write w ") )"))
+    ;; The seq of a sorted coll may returns entry types that do not have a valid print-method
     ;; representation.  To workaround that, replace them all with 2 item vectors instead.
-    (print-dup (seq-fn s) w)
+    (print-method (seq-fn s) w)
     (.write w ")")))
 
-(defmethod print-dup clojure.lang.PersistentTreeSet [o ^java.io.Writer w]
-  (print-dup-sorted "clojure.lang.PersistentTreeSet/create" seq o w))
+(defmethod print-method clojure.lang.PersistentTreeSet [o ^java.io.Writer w]
+  (print-method-sorted "clojure.lang.PersistentTreeSet/create" seq o w))
 
-(defmethod print-dup clojure.lang.PersistentTreeMap [o ^java.io.Writer w]
-  (print-dup-sorted "clojure.lang.PersistentTreeMap/create" #(sequence cat %) o w))
+(defmethod print-method clojure.lang.PersistentTreeMap [o ^java.io.Writer w]
+  (print-method-sorted "clojure.lang.PersistentTreeMap/create" #(sequence cat %) o w))
 
-(defmethod print-dup MemIdx [o ^java.io.Writer w]
+(defmethod print-method MemIdx [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/find-mem-idx ")
-  (print-dup (:idx o) w)
+  (print-method (:idx o) w)
   (.write w ")"))
 
-(defmethod print-dup AccumResultStub [o ^java.io.Writer w]
+(defmethod print-method AccumResultStub [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/run-accum ")
-  (print-dup-record o w)
+  (print-method-record o w)
   (.write w ")"))
 
-(defmethod print-dup AccumResultMemIdx [o ^java.io.Writer w]
+(defmethod print-method AccumResultMemIdx [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/find-accum-result-mem-idx ")
-  (print-dup (:idx o) w)
+  (print-method (:idx o) w)
   (.write w ")"))
 
-(defrecord PrintDupSessionSerializer [in-stream out-stream]
+(defrecord PrintMethodSessionSerializer [in-stream out-stream]
   ISessionSerializer
   (serialize [_ session opts]
     (let [{:keys [rulebase memory]} (eng/components session)
-          do-serialize (fn [print-dup-sources]
+          record-holder (IdentityHashMap.)
+          do-serialize (fn [print-method-sources]
                          (with-open [wtr (jio/writer in-stream)]
                            (binding [*node-id->node-cache* (volatile! {})
+                                     *clj-record-holder* record-holder
+                                     *cached-records?* true
                                      *print-meta* true
-                                     *print-dup* true
+                                     *print-readably* true
                                      *out* wtr]
-                             (doseq [prd print-dup-sources] (pr prd))
+                             (doseq [prd print-method-sources] (pr prd))
                              (flush))))]
 
       ;; In this case there is nothing to do with memory, so just serialize immediately.
@@ -699,11 +745,11 @@
                                         :activation-group-fn
                                         :alphas-fn))
               memory (:memory session-state)
-              print-dup-sources (cond
-                                  (:with-rulebase? opts) [rulebase memory]
-                                  :else [memory])]
+              print-method-sources (cond
+                                     (:with-rulebase? opts) [rulebase memory]
+                                     :else [memory])]
 
-          (do-serialize print-dup-sources)
+          (do-serialize print-method-sources)
 
           ;; Return the facts needing to be serialized still.
           (:indexed-facts imem)))))
@@ -711,10 +757,12 @@
   (deserialize [_ mem-facts opts]
     (with-open [rdr (clojure.lang.LineNumberingPushbackReader. (jio/reader out-stream))]
       (let [{:keys [rulebase-only? base-rulebase listeners transport]} opts
+            record-holder (IdentityHashMap.)
             ;; The rulebase should either be given from the base-session or found in
             ;; the restored session-state.
             rulebase (or base-rulebase
                          (binding [*node-id->node-cache* (volatile! {})
+                                   *clj-record-holder* record-holder
                                    *compile-expr-fn* (memoize (fn [id expr] (com/try-eval expr)))]
                            (read rdr)))]
         (if rulebase-only?
@@ -750,6 +798,7 @@
                                            (:id-to-node rulebase))
 
                 memory (-> (binding [*node-id->accumulator* node-id->accumulator
+                                     *clj-record-holder* record-holder
                                      *mem-facts* mem-facts
                                      *accum-results* (volatile! [])]
                              (read rdr))
@@ -778,7 +827,7 @@
   ([in+out-stream]
    (create-default-session-serializer in+out-stream in+out-stream))
   ([in-stream out-stream]
-   (->PrintDupSessionSerializer in-stream out-stream)))
+   (->PrintMethodSessionSerializer in-stream out-stream)))
 
 (defn serialize-rulebase
   ([session session-serializer]
