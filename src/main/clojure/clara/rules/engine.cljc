@@ -733,7 +733,7 @@
                                          (do-accumulate accumulator nil nil previous)
                                          previous-reduced)
                       accum-reduced (when first-reduce?
-                                      [previous previous-reduced])
+                                      ^::accum-node [previous previous-reduced])
                       converted (when (some? previous-reduced)
                                   (convert-return-fn previous-reduced))]
                 [fact-bindings [previous previous-reduced]] previous-results]
@@ -757,7 +757,8 @@
 
         ;; Note that this is added to memory a single time for all matching tokens because the memory
         ;; location doesn't depend on bindings from individual tokens.
-        (let [accum-reduced [[] initial-value]]
+
+        (let [accum-reduced ^::accum-node [[] initial-value]]
           ;; The fact-bindings are normally a superset of the join-bindings.  We have no fact-bindings
           ;; that are not join-bindings in this case since we have verified that new-bindings is empty.
           ;; Therefore the join-bindings and fact-bindings are exactly equal.
@@ -879,7 +880,7 @@
                                                 (not= ::not-reduced previous-reduced))
                                        (convert-return-fn previous-reduced))
                   
-                  accum-reduced [combined combined-reduced]]]
+                  accum-reduced ^::accum-node [combined combined-reduced]]]
 
       ;; Add the combined results to memory.
       (l/add-accum-reduced! listener node join-bindings accum-reduced bindings)
@@ -943,10 +944,10 @@
             [bindings elements] (platform/group-by-seq :bindings elements)
 
             :let [previous (mem/get-accum-reduced memory node join-bindings bindings)
-                  has-previous? (not= :clara.rules.memory/no-accum-reduced previous)
+                  has-previous? (not= ::mem/no-accum-reduced previous)
                   [previous previous-reduced] (if has-previous?
                                                 previous
-                                                [:clara.rules.memory/no-accum-reduced ::not-reduced])]
+                                                ^::accum-node [::mem/no-accum-reduced ::not-reduced])]
 
             ;; No need to retract anything if there were no previous items.
             :when has-previous?
@@ -991,18 +992,19 @@
                 
                 initial-converted (when initial-value
                                     (convert-return-fn initial-value))]
+
             (when (and (some? initial-converted)
                        (empty? new-bindings))
 
               (doseq [token matched-tokens]
-                (l/add-accum-reduced! listener node join-bindings [[] initial-value] join-bindings)
-                (mem/add-accum-reduced! memory node join-bindings [[] initial-value] join-bindings)
+                (l/add-accum-reduced! listener node join-bindings ^::accum-node [[] initial-value] join-bindings)
+                (mem/add-accum-reduced! memory node join-bindings ^::accum-node [[] initial-value] join-bindings)
                 (send-accumulated node accum-condition accumulator result-binding token initial-converted {}
                                   transport memory listener)))))
         (do
           ;; Add our newly retracted information to our node.
-          (l/add-accum-reduced! listener node join-bindings [retracted retracted-reduced] bindings)
-          (mem/add-accum-reduced! memory node join-bindings [retracted retracted-reduced] bindings)
+          (l/add-accum-reduced! listener node join-bindings ^::accum-node [retracted retracted-reduced] bindings)
+          (mem/add-accum-reduced! memory node join-bindings ^::accum-node  [retracted retracted-reduced] bindings)
 
           (cond
             (and (nil? previous-converted)
@@ -1077,13 +1079,14 @@
                 initial-value (:initial-value accumulator)
                 ;; Note that we check the the :initial-value is non-nil above, which is why we
                 ;; don't need (when initial-value (convert-return-fn initial-value)) here.
-                converted-result (convert-return-fn initial-value)]
+                converted-result (convert-return-fn initial-value)
+                accum-reduced []]
 
             ;; This accumulator keeps candidate facts rather than fully reduced values in the working memory,
             ;; since the reduce operation must occur per token. Since there are no candidate facts
             ;; in this flow, just put an empty vector into our memory.
-            (l/add-accum-reduced! listener node join-bindings [] fact-bindings)
-            (mem/add-accum-reduced! memory node join-bindings [] fact-bindings)
+            (l/add-accum-reduced! listener node join-bindings accum-reduced fact-bindings)
+            (mem/add-accum-reduced! memory node join-bindings accum-reduced fact-bindings)
 
             (when (some? converted-result)
               ;; Send the created accumulated item to the children.
@@ -1130,15 +1133,16 @@
                   matched-tokens (mem/get-tokens memory node join-bindings)]
             [bindings candidates] binding-candidates-seq
             :let [previous-candidates (mem/get-accum-reduced memory node join-bindings bindings)
-                  previously-reduced? (not= :clara.rules.memory/no-accum-reduced previous-candidates)
+                  previously-reduced? (not= ::mem/no-accum-reduced previous-candidates)
                   previous-candidates (when previously-reduced? previous-candidates)]]
 
       ;; Combine the newly reduced values with any previous items.
-      (let [combined-candidates (into previous-candidates candidates)]
+      (let [combined-candidates (into previous-candidates candidates)
+            accum-reduced combined-candidates]
 
-        (l/add-accum-reduced! listener node join-bindings combined-candidates bindings)
-
-        (mem/add-accum-reduced! memory node join-bindings combined-candidates bindings)
+        (l/add-accum-reduced! listener node join-bindings accum-reduced bindings)
+        (mem/add-accum-reduced! memory node join-bindings accum-reduced bindings)
+        
         (doseq [token matched-tokens
 
                 :let [accum-result (do-accumulate accumulator join-filter-fn token combined-candidates)
@@ -1213,12 +1217,13 @@
             :let [previous-candidates (mem/get-accum-reduced memory node join-bindings bindings)]
 
             ;; No need to retract anything if there was no previous item.
-            :when (not= :clara.rules.memory/no-accum-reduced previous-candidates)
+            :when (not= ::mem/no-accum-reduced previous-candidates)
 
             :let [facts (mapv :fact elements)
                   new-candidates (second (mem/remove-first-of-each facts previous-candidates))]]
       
       ;; Add the new candidates to our node.
+      (l/add-accum-reduced! listener node join-bindings new-candidates bindings)
       (mem/add-accum-reduced! memory node join-bindings new-candidates bindings)
 
       (doseq [;; Get all of the previously matched tokens so we can retract and re-send them.
