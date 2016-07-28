@@ -39,7 +39,6 @@
 (def holder (atom {}))
 (def times (atom 0))
 (defmacro dbgd [x] `(let [x# ~x] (when (< @times 40) (println '~x) (prn x#)) (swap! times inc) (swap! holder assoc '~x x#) x#))
-(println "COMPILING DURABILITY AGAIN")
 
 ;; A schema representing a minimal representation of a rule session's state.
 ;; This allows for efficient storage, particularly when serialized with Fressian or a similar format
@@ -181,11 +180,19 @@
         (restore-insertions session-state))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; Restoring an entire active session in memory that is able to insert, retract, and fire rule again to obtain new working memory states.
+;;;; Restoring an entire active session in memory that is able to insert, retract, and
+;;;; fire rule again to obtain new working memory states.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defmulti print-obj
+  (fn [o writer]
+    (let [t (get (meta o) :type)]
+      (if (keyword? t) t (class o)))))
 
-;;;; Rulebase print-method impl's.
+(defmethod print-obj :default [o w]
+  (print-method o w))
+
+;;;; Rulebase printer impl's.
 
 (def ^:dynamic *node-id->node-cache* nil)
 
@@ -240,36 +247,36 @@
   (.put *clj-record-holder* x (.size *clj-record-holder*))
   x)
 
-(defn print-method-record [o ^java.io.Writer w]
-  (let [print-record (fn []
-                       (let [class-name (-> o class .getName)
-                             idx (.lastIndexOf class-name (int \.))
-                             ns-nom (.substring class-name 0 idx)
-                             nom (.substring class-name (inc idx))
-                             builder-name (symbol (str (cm/demunge ns-nom) "/map->" (cm/demunge nom)))]
-                         (print-meta o w)
-                         (.write w (str "#=(" builder-name))
-                         (print-map o print-method w)
-                         (.write w ")")))]
+(defn print-record [o ^java.io.Writer w]
+  (let [class-name (-> o class .getName)
+        idx (.lastIndexOf class-name (int \.))
+        ns-nom (.substring class-name 0 idx)
+        nom (.substring class-name (inc idx))
+        builder-name (symbol (str (cm/demunge ns-nom) "/map->" (cm/demunge nom)))]
+    (print-meta o w)
+    (.write w (str "#=(" builder-name))
+    (print-map o print-obj w)
+    (.write w ")")))
 
-    (if *cached-records?*
-      (if-let [idx (some-> *clj-record-holder* (.get o))]
-        (do
-          (.write w "#=(clara.rules.durability/clj-record-id->fact ")
-          (print-method idx w)
-          (.write w ")"))
+(defn print-obj-record [o ^java.io.Writer w]
+  (if *cached-records?*
+    (if-let [idx (some-> *clj-record-holder* (.get o))]
+      (do
+        (.write w "#=(clara.rules.durability/clj-record-id->fact ")
+        (print-obj idx w)
+        (.write w ")"))
+      
+      (do
+        (.write w "#=(clara.rules.durability/clj-record-fact-holder-add! ")
+        (print-record)
+        (.write w ")")
         
-        (do
-          (.write w "#=(clara.rules.durability/clj-record-fact-holder-add! ")
-          (print-record)
-          (.write w ")")
-          
-          (.put *clj-record-holder* o (.size *clj-record-holder*))))
-      (print-record))))
+        (.put *clj-record-holder* o (.size *clj-record-holder*))))
+    (print-record)))
 
-(defn print-method-node
+(defn print-obj-node
   ([node ^java.io.Writer w]
-   (print-method-node nil node nil w))
+   (print-obj-node nil node nil w))
   ([^String header
     node
     ^String footer
@@ -278,79 +285,79 @@
      (if (@*node-id->node-cache* node-id)
        (do
          (.write w "#=(clara.rules.durability/node-id->node ")
-         (print-method node-id w)
+         (print-obj node-id w)
          (.write w ")"))
        (do
          (cache-node node)
          (vswap! *node-id->node-cache* assoc node-id node)
          (.write w "#=(clara.rules.durability/cache-node ")
          (when header (.write w header))
-         (print-method-record node w)
+         (print-obj-record node w)
          (when footer (.write w footer))
          (.write w ")")
          )))))
 
 (defn- write-join-filter-node [node ^java.io.Writer w]
-  (print-method-node "#=(clara.rules.durability/add-join-filter-fn "
+  (print-obj-node "#=(clara.rules.durability/add-join-filter-fn "
                   (assoc node :join-filter-fn nil)
                   ")"
                   w))
 
-(defmethod print-method clojure.lang.IRecord [o ^java.io.Writer w]
-  (print-method-record o w))
+(defmethod print-obj clojure.lang.IRecord [o ^java.io.Writer w]
+  (print-obj-record o w))
 
-(defmethod print-method ProductionNode [o ^java.io.Writer w]
-  (print-method-node "#=(clara.rules.durability/add-rhs-fn "
+(defmethod print-obj ProductionNode [o ^java.io.Writer w]
+  (print-obj-node "#=(clara.rules.durability/add-rhs-fn "
                      (assoc o :rhs nil)
                      ")"
                      w))
 
-(defmethod print-method QueryNode [o ^java.io.Writer w]
-  (print-method-node o w))
+(defmethod print-obj QueryNode [o ^java.io.Writer w]
+  (print-obj-node o w))
 
-(defmethod print-method AlphaNode [o ^java.io.Writer w]
+(defmethod print-obj AlphaNode [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/add-alpha-fn ")
   ;; AlphaNode's do not have an :id
-  (print-method-record (assoc o :activation nil) w)
+  (print-obj-record (assoc o :activation nil) w)
   (.write w ")"))
 
-(defmethod print-method RootJoinNode [o ^java.io.Writer w]
-  (print-method-node o w))
+(defmethod print-obj RootJoinNode [o ^java.io.Writer w]
+  (print-obj-node o w))
 
-(defmethod print-method HashJoinNode [o ^java.io.Writer w]
-  (print-method-node o w))
+(defmethod print-obj HashJoinNode [o ^java.io.Writer w]
+  (print-obj-node o w))
 
-(defmethod print-method ExpressionJoinNode [o ^java.io.Writer w]
+(defmethod print-obj ExpressionJoinNode [o ^java.io.Writer w]
   (write-join-filter-node o w))
 
-(defmethod print-method NegationNode [o ^java.io.Writer w]
-  (print-method-node o w))
+(defmethod print-obj NegationNode [o ^java.io.Writer w]
+  (print-obj-node o w))
 
-(defmethod print-method NegationWithJoinFilterNode [o ^java.io.Writer w]
+(defmethod print-obj NegationWithJoinFilterNode [o ^java.io.Writer w]
   (write-join-filter-node o w))
 
-(defmethod print-method TestNode [o ^java.io.Writer w]
-  (print-method-node "#=(clara.rules.durability/add-test-fn "
+(defmethod print-obj TestNode [o ^java.io.Writer w]
+  (print-obj-node "#=(clara.rules.durability/add-test-fn "
                   (assoc o :test nil)
                   ")"
                   w))
 
-(defmethod print-method AccumulateNode [o ^java.io.Writer w]
-  (print-method-node "#=(clara.rules.durability/add-accumulator "
+(defmethod print-obj AccumulateNode [o ^java.io.Writer w]
+  (print-obj-node "#=(clara.rules.durability/add-accumulator "
                   (assoc o :accumulator nil)
                   ")"
                   w))
 
-(defmethod print-method AccumulateWithJoinFilterNode [o ^java.io.Writer w]
-  (print-method-node "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn "
+(defmethod print-obj AccumulateWithJoinFilterNode [o ^java.io.Writer w]
+  (print-obj-node "#=(clara.rules.durability/add-accumulator #=(clara.rules.durability/add-join-filter-fn "
                   (assoc o :accumulator nil :join-filter-fn nil)
                   "))"
                   w))
 
-(defmethod print-method RuleOrderedActivation [^RuleOrderedActivation o ^java.io.Writer w]
+(defmethod print-obj RuleOrderedActivation [^RuleOrderedActivation o ^java.io.Writer w]
   (.write w "#")
   (.write w (.getName (class o)))
-  (print-method [(.-node-id o)
+  (print-obj [(.-node-id o)
               (.-token o)
               (.-activation o)
               (.-rule-load-order o)]
@@ -642,7 +649,7 @@
   (deserialize-facts [this opts]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; Basic print-method based session serializer.
+;;;; Basic print-obj based session serializer.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private ^:dynamic *mem-facts* nil)
@@ -662,59 +669,59 @@
     (vswap! *accum-results* conj res)
     res))
 
-;;;; To deal with http://dev.clojure.org/jira/browse/CLJ-1733 we need to impl print-method on
+;;;; To deal with http://dev.clojure.org/jira/browse/CLJ-1733 we need to impl print-obj on
 ;;;; sorted sets and maps.  However, this is not sufficient for arbitrary comparators.  If
 ;;;; arbitrary comparators are used for the sorted coll, the comparator has to be restored
 ;;;; explicitly since arbitrary functions are not serializable in any stable way right now.
 
-(defn- print-method-sorted [create-fn-str seq-fn ^clojure.lang.Sorted s ^java.io.Writer w]
-  (let [cname (-> s meta :print-method/comparator-name)]
+(defn- print-obj-sorted [create-fn-str seq-fn ^clojure.lang.Sorted s ^java.io.Writer w]
+  (let [cname (-> s meta :print-obj/comparator-name)]
 
     ;; Fail if reliable serialization of this sorted coll isn't possible.
     (when (and (not cname)
                (not= (.comparator s) clojure.lang.RT/DEFAULT_COMPARATOR))
-      (throw (ex-info (str "Cannot serialize (via print-method) sorted collection with non-default"
-                           " comparator because no :print-method/comparator-name provided in metadata.")
+      (throw (ex-info (str "Cannot serialize (via print-obj) sorted collection with non-default"
+                           " comparator because no :print-obj/comparator-name provided in metadata.")
                       {:sorted-coll s
                        :comparator (.comparator s)})))
     
     (.write w (str "#=(" create-fn-str " "))
     (when cname
       (.write w "#=(deref #=(var ")
-      (print-method cname w)
+      (print-obj cname w)
       (.write w ") )"))
-    ;; The seq of a sorted coll may returns entry types that do not have a valid print-method
+    ;; The seq of a sorted coll may returns entry types that do not have a valid print-obj
     ;; representation.  To workaround that, replace them all with 2 item vectors instead.
-    (print-method (seq-fn s) w)
+    (print-obj (seq-fn s) w)
     (.write w ")")))
 
-(defmethod print-method clojure.lang.PersistentTreeSet [o ^java.io.Writer w]
-  (print-method-sorted "clojure.lang.PersistentTreeSet/create" seq o w))
+(defmethod print-obj clojure.lang.PersistentTreeSet [o ^java.io.Writer w]
+  (print-obj-sorted "clojure.lang.PersistentTreeSet/create" seq o w))
 
-(defmethod print-method clojure.lang.PersistentTreeMap [o ^java.io.Writer w]
-  (print-method-sorted "clojure.lang.PersistentTreeMap/create" #(sequence cat %) o w))
+(defmethod print-obj clojure.lang.PersistentTreeMap [o ^java.io.Writer w]
+  (print-obj-sorted "clojure.lang.PersistentTreeMap/create" #(sequence cat %) o w))
 
-(defmethod print-method MemIdx [o ^java.io.Writer w]
+(defmethod print-obj MemIdx [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/find-mem-idx ")
-  (print-method (:idx o) w)
+  (print-obj (:idx o) w)
   (.write w ")"))
 
-(defmethod print-method AccumResultStub [o ^java.io.Writer w]
+(defmethod print-obj AccumResultStub [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/run-accum ")
-  (print-method-record o w)
+  (print-obj-record o w)
   (.write w ")"))
 
-(defmethod print-method AccumResultMemIdx [o ^java.io.Writer w]
+(defmethod print-obj AccumResultMemIdx [o ^java.io.Writer w]
   (.write w "#=(clara.rules.durability/find-accum-result-mem-idx ")
-  (print-method (:idx o) w)
+  (print-obj (:idx o) w)
   (.write w ")"))
 
-(defrecord PrintMethodSessionSerializer [in-stream out-stream]
+(defrecord PrintBasedSessionSerializer [in-stream out-stream]
   ISessionSerializer
   (serialize [_ session opts]
     (let [{:keys [rulebase memory]} (eng/components session)
           record-holder (IdentityHashMap.)
-          do-serialize (fn [print-method-sources]
+          do-serialize (fn [print-obj-sources]
                          (with-open [wtr (jio/writer in-stream)]
                            (binding [*node-id->node-cache* (volatile! {})
                                      *clj-record-holder* record-holder
@@ -722,7 +729,7 @@
                                      *print-meta* true
                                      *print-readably* true
                                      *out* wtr]
-                             (doseq [prd print-method-sources] (pr prd))
+                             (doseq [prd print-obj-sources] (pr prd))
                              (flush))))]
 
       ;; In this case there is nothing to do with memory, so just serialize immediately.
@@ -745,11 +752,11 @@
                                         :activation-group-fn
                                         :alphas-fn))
               memory (:memory session-state)
-              print-method-sources (cond
+              print-obj-sources (cond
                                      (:with-rulebase? opts) [rulebase memory]
                                      :else [memory])]
 
-          (do-serialize print-method-sources)
+          (do-serialize print-obj-sources)
 
           ;; Return the facts needing to be serialized still.
           (:indexed-facts imem)))))
@@ -827,7 +834,7 @@
   ([in+out-stream]
    (create-default-session-serializer in+out-stream in+out-stream))
   ([in-stream out-stream]
-   (->PrintMethodSessionSerializer in-stream out-stream)))
+   (->PrintBasedSessionSerializer in-stream out-stream)))
 
 (defn serialize-rulebase
   ([session session-serializer]
