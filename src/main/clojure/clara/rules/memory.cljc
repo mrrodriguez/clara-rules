@@ -2,7 +2,7 @@
   "This namespace is for internal use and may move in the future.
    Specification and default implementation of working memory"
   (:require [clojure.set :as s]))
-(defmacro dbgm [x] `(let [x# ~x] (println '~x) (prn x#) x#))
+
 ;; Activation record used by get-activations and add-activations! below.
 (defrecord Activation [node token])
 
@@ -114,22 +114,21 @@
 
 #?(:clj
    (defn- list-remove!
-     "Removes the item, to-remove, from the given list, lst.  If it is found and
-      removed, returns true.  Otherwise returns false.  Only removes the first 
-      element in the list that is equal to to-remove.  If others are equal, they
-      will not be removed.  This is similar to java.util.List.remove(Object) 
-      lst is updated in place for performance.  This implies that the list must 
-      support the mutable list interface, namely via the
+     "Removes the item, to-remove, from the given list, lst.  If it is found and removed,
+      returns true.  Otherwise returns false.  Only removes the first element in the list
+      that is equal to to-remove.  Equality is done based on the given eq-pred function.
+      If it isn't given, the default is = .  If others are equal, they will not be removed.
+      This is similar to java.util.List.remove(Object).  lst is updated in place for performance.
+      This implies that the list must support the mutable list interface, namely via the
       java.util.List.listIterator()."
      ([^java.util.List lst to-remove]
       (list-remove! lst to-remove =))
-
-     ([^java.util.List lst to-remove compare-fn]
+     ([^java.util.List lst to-remove eq-pred]
       (if-not (coll-empty? lst)
         (let [li (.listIterator lst)]
           (loop [x (.next li)]
             (cond
-              (compare-fn to-remove x)
+              (eq-pred to-remove x)
               (do
                 (.remove li)
                 true)
@@ -273,6 +272,8 @@
                      ;; Also avoiding Clojure destructuring since even that is not as fast
                      ;; pre-1.9.0.
                      (if-let [^clojure.lang.ISeq entries (.seq ^clojure.lang.Seqable bindings)]
+                       ;; Type hint to Indexed vs MapEntry just because MapEntry seems to be a
+                       ;; less stable impl detail to rely on.
                        (loop [^clojure.lang.Indexed entry (.first entries)
                               entries (.next entries)]
                          (let [k (some-> entry (.nth 0))
@@ -301,10 +302,11 @@
                          (= i count-matches)
                          true
 
-                         ;; Compare node-id's first.  Fallback to comparing fact.  This will
+                         ;; Compare node-id's first.  Fallback to comparing facts.  This will
                          ;; most very likely be the most expensive part to execute.
                          (let [^clojure.lang.Indexed m (.nth matches i)
                                ^clojure.lang.Indexed om (.nth other-matches i)]
+                           ;; A token :matches tuple is of the form [fact node-id].
                            (and (= (.nth m 1) (.nth om 1))
                                 (compare-fn (.nth m 0) (.nth om 0))))
                          (recur (inc i))
@@ -317,7 +319,11 @@
      (using-token-identity [this bool])))
 
 #?(:clj
-   (deftype RuleOrderedActivation [node-id token activation rule-load-order ^:unsynchronized-mutable use-token-identity?]
+   (deftype RuleOrderedActivation [node-id
+                                   token
+                                   activation
+                                   rule-load-order
+                                   ^:unsynchronized-mutable use-token-identity?]
      IdentityComparable
      (using-token-identity [this bool]
        (set! use-token-identity? bool)
@@ -341,7 +347,8 @@
              (= node-id
                 (.node-id other))
 
-             ;; We check with identity based semantics on the `other` when the metadata indicates do so.
+             ;; We check with identity based semantics on the other when the use-token-identity? field
+             ;; indicates do so.
              (if (or use-token-identity? (.-use-token-identity? other))
                (fast-token-compare identical? token (.-token other))
                (fast-token-compare = token (.-token other))))))))))
@@ -595,7 +602,7 @@
                    ;; most of the time this is all we need and it can be much faster.  Any token that
                    ;; wasn't removed via identity, has to be "retried" with normal value-based
                    ;; equality though since those semantics are supported within the engine.  This
-                   ;; slower path should be rare any heavy retraction flows - such as those that come
+                   ;; slower path should be rare for any heavy retraction flows - such as those that come
                    ;; via truth maintenance.
                    two-pass-remove! (fn [remaining-tokens tokens]
                                       (let [[removed-tokens not-removed-tokens]
@@ -792,19 +799,19 @@
 
            (when-not (coll-empty? activations)
              ;; Remove as many activations by identity as possible first.
-             (let [not-removed (loop [r (first to-remove)
+             (let [not-removed (loop [to-remove-item (first to-remove)
                                       to-remove (next to-remove)
                                       not-removed (transient [])]
-                                 (if r
-                                   (let [act (->rule-ordered-activation r true)]
+                                 (if to-remove-item
+                                   (let [act (->rule-ordered-activation to-remove-item true)]
                                      (if (.remove activations act)
                                        (recur (first to-remove) (next to-remove) not-removed)
                                        (recur (first to-remove) (next to-remove) (conj! not-removed act))))
                                    (persistent! not-removed)))]
 
-               ;; There may still be tokens not removed since the removal may be based on value-based
-               ;; equality semantics.  Retractions in the engine do not require that identical object
-               ;; references are given to remove object values that are equal.
+               ;; There may still be activations not removed since the removal may be based on value-based
+               ;; equality semantics.  Retractions in the engine do not require that identical object references
+               ;; are given to remove object values that are equal.
                (doseq [act not-removed]
                  (.remove activations (using-token-identity act false)))
 
