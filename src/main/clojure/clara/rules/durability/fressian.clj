@@ -33,7 +33,7 @@
             WriteHandler
             ReadHandler]
            [java.util
-            HashMap
+            ArrayList
             IdentityHashMap]))
 
 ;;; TODO cache these based on class?  Will just speed up serialization.
@@ -154,33 +154,6 @@
                   (-> rdr
                       (read-record add-node-expr-fn)
                       d/cache-node)))}}))
-
-;;;; TODO impl this macro
-(comment
-  (defhandles record clojure.lang.IRecord
-    [tag "clj/record"
-     idx-tag "clj/recordidx"]
-
-    (defwriter [w o]
-      (if-let [idx (.get d/*clj-record-holder* o)]
-        (do
-          (.writeTag w idx-tag 1)
-          (.writeInt w idx))
-        (do
-          (write-record w tag o)
-          (.put d/*clj-record-holder* o (.size d/*clj-record-holder*)))))
-
-    {idx-tag (defreader [r tag component-count]
-               (if-let [idx (.get d/*clj-record-holder* rec)]
-                 (do
-                   (.writeTag w "clj/recordidx" 1)
-                   (.writeInt w idx))
-                 (do
-                   (write-record w "clj/record" rec)
-                   (.put d/*clj-record-holder* rec (.size d/*clj-record-holder*)))))
-     tag (defreader [r tag component-count]
-           (d/clj-record-fact-holder-add! (read-record rdr)))}))
-
 
 (def handlers
   {"java/class"
@@ -324,23 +297,32 @@
 
    "clj/record"
    {:class clojure.lang.IRecord
+    ;; Write a record a single time per object reference to that record.  The record is then "cached"
+    ;; with the IdentityHashMap `d/*clj-record-holder*`.  If another reference to this record instance
+    ;; is encountered later, only the "index" of the record in the map will be written.
     :writer (reify WriteHandler
               (write [_ w rec]
-                (if-let [idx (.get d/*clj-record-holder* rec)]
+                (if-let [idx (d/clj-record-fact->idx rec)]
                   (do
                     (.writeTag w "clj/recordidx" 1)
                     (.writeInt w idx))
                   (do
                     (write-record w "clj/record" rec)
-                    (.put d/*clj-record-holder* rec (.size d/*clj-record-holder*))))))
+                    (d/clj-record-holder-add-fact-idx! rec)))))
+    ;; When reading the first time a reference to a record instance is found, the entire record will
+    ;; need to be constructed.  It is then put into indexed cache.  If more references to this record
+    ;; instance are encountered later, they will be in the form of a numeric index into this cache.
+    ;; This is guaranteed by the semantics of the corresponding WriteHandler.
     :readers {"clj/recordidx"
               (reify ReadHandler
                 (read [_ rdr tag component-count]
-                  (d/clj-record-id->fact (.readInt rdr))))
+                  (d/clj-record-idx->fact (.readInt rdr))))
               "clj/record"
               (reify ReadHandler
                 (read [_ rdr tag component-count]
-                  (d/clj-record-fact-holder-add! (read-record rdr))))}}
+                  (-> rdr
+                      read-record
+                      d/clj-record-holder-add-fact!)))}}
 
    "clara/productionnode"
    (create-cached-node-handler ProductionNode
@@ -356,25 +338,30 @@
 
    "clara/alphanode"
    {:class AlphaNode
+    ;; The writer and reader here work similar to the IRecord implementation.  The only
+    ;; difference is that the record needs to be written with out the compiled clj
+    ;; function on it.  This is due to clj functions not having any convenient format
+    ;; for serialization.  The function is restored by re-eval'ing the function based on
+    ;; its originating code form at read-time.
     :writer (reify WriteHandler
               (write [_ w o]
-                (if-let [idx (.get d/*clj-record-holder* o)]
+                (if-let [idx (d/clj-record-fact->idx o)]
                   (do
                     (.writeTag w "clara/alphanodeid" 1)
                     (.writeInt w idx))
                   (do
                     (write-record w "clara/alphanode" (assoc o :activation nil))
-                    (.put d/*clj-record-holder* o (.size d/*clj-record-holder*))))))
+                    (d/clj-record-holder-add-fact-idx! o)))))
     :readers {"clara/alphanodeid"
               (reify ReadHandler
                 (read [_ rdr tag component-count]
-                  (.get d/*clj-record-holder* (.readObject rdr))))
+                  (d/clj-record-idx->fact (.readObject rdr))))
               "clara/alphanode"
               (reify ReadHandler
                 (read [_ rdr tag component-count]
-                  (let [rec (read-record rdr d/add-alpha-fn)]
-                    (.put d/*clj-record-holder* rec (.size d/*clj-record-holder*))
-                    rec)))}}
+                  (-> rdr
+                      (read-record d/add-alpha-fn)
+                      d/clj-record-holder-add-fact!)))}}
 
    "clara/rootjoinnode"
    (create-cached-node-handler RootJoinNode
@@ -462,8 +449,8 @@
 
 (def write-handler-lookup
   (-> write-handlers
-   fres/associative-lookup
-       fres/inheritance-lookup))
+      fres/associative-lookup
+      fres/inheritance-lookup))
 
 (def read-handlers
     (->> handlers
@@ -510,7 +497,7 @@
     (with-open [^FressianReader rdr (fres/create-reader in-stream :handlers read-handler-lookup)]
       (let [{:keys [rulebase-only? base-rulebase]} opts
 
-            record-holder (HashMap.)
+            record-holder (ArrayList.)
             ;; The rulebase should either be given from the base-session or found in
             ;; the restored session-state.
             rulebase (or (and (not rulebase-only?) base-rulebase)

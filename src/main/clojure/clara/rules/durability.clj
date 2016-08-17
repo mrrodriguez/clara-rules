@@ -35,6 +35,8 @@
             AccumulateNode
             AccumulateWithJoinFilterNode]
            [java.util
+            List
+            Map
             IdentityHashMap]))
 
 (def times (atom 0))
@@ -248,17 +250,30 @@
    will ignore any specific Clara `print-method` impl's."
   false)
 
-(def ^:dynamic ^java.util.Map *clj-record-holder* nil)
+(def ^:dynamic *clj-record-holder*
+  "A cache for writing and reading Clojure records.  At write time, an IdentityHashMap can be
+   used to keep track of repeated references to the same record object instance occurring in
+   the serialization stream.  At read time, a plain ArrayList (mutable and indexed for speed)
+   can be used to add records to when they are first seen, then look up repeated occurrences
+   of references to the same record instance later."
+  nil)
 
-(defn clj-record-id->fact [id]
-  (.get *clj-record-holder* id))
+(defn clj-record-fact->idx [fact]
+  (.get ^Map *clj-record-holder* fact))
 
-(defn clj-record-fact-holder-add! [x]
-  ;; Be sure to use a long instead of int here since Clojure numerics are typically read
-  ;; and interpreted as longs.  Trying to look a long up in a int-keyed table doesn't
-  ;; work with all Java collections.
-  (.put *clj-record-holder* (long (.size *clj-record-holder*)) x)
-  x)
+(defn clj-record-holder-add-fact-idx! [fact]
+  ;; Note the values will be int type here.  This shouldn't be a problem since they
+  ;; will be read later as longs and both will be compatible with the index lookup
+  ;; at read-time.  This could have a cast to long here, but it would waste time
+  ;; unnecessarily.
+  (.put ^Map *clj-record-holder* fact (.size ^Map *clj-record-holder*)))
+
+(defn clj-record-idx->fact [id]
+  (.get ^List *clj-record-holder* id))
+
+(defn clj-record-holder-add-fact! [fact]
+  (.add ^List *clj-record-holder* fact)
+  fact)
 
 (defn create-map-entry [k v]
   ;; Using the ctor instead of clojure.lang.MapEntry/create since this method
