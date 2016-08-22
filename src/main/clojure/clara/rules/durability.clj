@@ -1,6 +1,11 @@
 (ns clara.rules.durability
   "Support for persisting Clara sessions to an external store.
-  
+   Provideds the ability to store and restore an entire session working memory state.  The restored
+   session is able to have additional insert, retract, query, and fire rule calls performed 
+   immediately after.
+
+   See https://github.com/rbrush/clara-rules/issues/198 for more discussion on this.
+
    Note! This is still an EXPERIMENTAL namespace. This may change non-passively without warning.
    Any session or rulebase serialized in one version of Clara is not guaranteed to deserialize 
    successfully against another version of Clara."
@@ -9,33 +14,14 @@
             [clara.rules.memory :as mem]
             [clojure.set :as set]
             [schema.core :as s])
-  (:import [clara.rules.memory
-            RuleOrderedActivation]
-           [clara.rules.compiler
+  (:import [clara.rules.compiler
             Rulebase]
-           [clara.rules.engine
-            Token
-            ProductionNode
-            QueryNode
-            AlphaNode
-            RootJoinNode
-            HashJoinNode
-            ExpressionJoinNode
-            NegationNode
-            NegationWithJoinFilterNode
-            TestNode
-            AccumulateNode
-            AccumulateWithJoinFilterNode]
+           [clara.rules.memory
+            RuleOrderedActivation]
            [java.util
             List
             Map
             IdentityHashMap]))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; Restoring an entire active session in memory that is able to insert, retract, and fire rule
-;;;; again to obtain new working memory states.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Rulebase serialization helpers.
@@ -450,11 +436,25 @@
      serialized and deserialized by an implementation of IWorkingMemorySerializer."))
 
 (defprotocol IWorkingMemorySerializer
-  ""
+  "Provides the ability to serialize and deserialize the facts stored in the working memory of a session.
+   Facts can be serialized in whatever way makes sense for a given domain.  The domain of facts can vary
+   greatly from one use-case of the rules engine to the next.  So the mechanism of serializing the facts
+   in memory can vary greatly as a result of this.  Clara does not yet provide any default implementations
+   for this, but may in the future.  However, many of the handlers defined in clara.rules.durability.fressian
+   can be reused if the consumer wishes to serialize via Fressian.  See more on this in 
+   the clara.rules.durability.fressian namespace docs.
+   
+   The important part of this serialization protocol is that the facts returned from deserialize-facts are in
+   the *same order* as how they were given to serialize-facts."
   
-  (serialize-facts [this fact-seq])
+  (serialize-facts [this fact-seq]
+    "Serialize the given fact-seq, which is an order sequence of facts from working memory of a session.  
+     Note, as mentioned in the protocol docs, the *order* these are given is *important* and should be preserved
+     when they are returned via deserialize-facts.")
 
-  (deserialize-facts [this]))
+  (deserialize-facts [this]
+    "Returns the facts associated to this instance deserialized in the same order that they were given
+     to serialize-facts."))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Durability API.
