@@ -11,6 +11,8 @@
             [schema.core :as s])
   (:import [clara.rules.memory
             RuleOrderedActivation]
+           [clara.rules.compiler
+            Rulebase]
            [clara.rules.engine
             Token
             ProductionNode
@@ -283,18 +285,6 @@
                       %)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; Serialization protocols.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defprotocol ISessionSerializer
-  (serialize [this session opts])
-  (deserialize [this mem-facts opts]))
-
-(defprotocol IWorkingMemorySerializer
-  (serialize-facts [this fact-seq])
-  (deserialize-facts [this]))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Commonly useful session serialization helpers.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -424,44 +414,153 @@
                    :get-alphas-fn get-alphas-fn})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; Serialization protocols.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defprotocol ISessionSerializer
+  "Provides the ability to serialize and deserialize a session.  Options can be given and supported
+   via the opts argument to both serialize and deserialize.  Certain options are expected and 
+   required to be supported by any implementation of ISessionSerializer.  These are referred to as 
+   the 'standard' options. 
+   
+   These include:
+
+   * :rulebase-only? - When true indicates the rulebase is the only part of the session to serializer.
+     The *default* is false for the serialize-session-state function.  It is defaulted to true for the
+     serialize-rulebase convenience function.  This is useful for when many sessions are to be
+     serialized, but all having a common rulebase.  Storing the rulebase only, will likely save both
+     space and time in these scenarios.
+
+   * :with-rulebase? - When true the rulebase is included in the serialized state of the session.  
+     The *default* behavior is false when serializing a session via the serialize-session-state function.
+
+   * :base-rulebase - A rulebase to attach to the session being deserialized.  The assumption here is that
+     the session was serialized without the rulebase, i.e. :with-rulebase? = false, so it needs a rulebase
+     to be 'attached' back onto it to be usable.
+
+   Other options can be supported by specific implementors of ISessionSerializer."
+
+  (serialize [this session opts]
+    "Serialize the given session with the given options.  Where the session state is stored is dependent
+     on the implementation of this instance e.g. it may store it in a known reference to an IO stream.")
+
+  (deserialize [this mem-facts opts]
+    "Deserialize the session state associated to this instance e.g. it may be coming from a known reference
+     to an IO stream.  mem-facts is a sequential collection of the working memory facts that were 
+     serialized and deserialized by an implementation of IWorkingMemorySerializer."))
+
+(defprotocol IWorkingMemorySerializer
+  ""
+  
+  (serialize-facts [this fact-seq])
+
+  (deserialize-facts [this]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Durability API.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn serialize-rulebase
-  ([session session-serializer]
+(s/defn serialize-rulebase
+  "Serialize *only* the rulebase portion of the given session.  The serialization is done by the
+   given session-serializer implementor of ISessionSerializer.  
+
+   Options can be given as an optional argument.  These are passed through to the session-serializer
+   implementation.  See the description of standard options an ISessionSerializer should provide in
+   the ISessionSerializer docs.  Also, see the specific ISessionSerializer implementation docs for 
+   any non-standard options supported/not supported.
+   See ISessionSerializer docs for more on that.
+
+   The rulebase is the stateless structure that controls the flow of productions, i.e. the 'rete'
+   rule network.  The ability to serialize only the rulebase is supported so that the rulebase can
+   be stored and retrieved a single time for potentially many sessions containing different working
+   memory data, for the same rules.  This function is only a convenience for passing the
+   :rulebase-only? true flag to the serialize-session-state function.
+   See serialize-session-state for more." 
+  ([session :- (s/protocol eng/ISession)
+    session-serializer :- (s/protocol ISessionSerializer)]
    (serialize-rulebase session
                        session-serializer
                        {}))
-  ([session session-serializer opts]
+
+  ([session :- (s/protocol eng/ISession)
+    session-serializer :- (s/protocol ISessionSerializer)
+    opts :- {s/Any s/Any}]
    (serialize session-serializer
               session
               (assoc opts :rulebase-only? true))))
 
-(defn deserialize-rulebase
-  ([session-serializer]
+(s/defn deserialize-rulebase :- Rulebase
+  "Deserializes the rulebase stored via the serialize-rulebase function.  This is done via the given
+   session-serializer implementor of ISessionSerializer.
+
+   Options can be given as an optional argument.  These are passed through to the session-serializer
+   implementation.  See the description of standard options an ISessionSerializer should provide in
+   the ISessionSerializer docs.  Also, see the specific ISessionSerializer implementation docs for 
+   any non-standard options supported/not supported.
+   See ISessionSerializer docs for more on that."
+  ([session-serializer :- (s/protocol ISessionSerializer)]
    (deserialize-rulebase session-serializer
                          {}))
-  ([session-serializer opts]
+
+  ([session-serializer :- (s/protocol ISessionSerializer)
+    opts :- {s/Any s/Any}]
    (deserialize session-serializer
                 nil
                 (assoc opts :rulebase-only? true))))
 
-(defn serialize-session-state
-  ([session session-serializer memory-facts-serializer]
+(s/defn serialize-session-state
+  "Serializes the state of the given session.  By default, this *excludes* the rulebase from being
+   serialized alongside the working memory state of the session.  The rulebase, if specified, and 
+   the working memory of the session are serialized by the session-serializer implementor of 
+   ISessionSerializer.  The memory-serializer implementor of IWorkingMemorySerializer is used to
+   serialize the actual facts stored within working memory.  
+
+   Typically, the caller can use a pre-defined default session-serializer, such as
+   clara.rules.durability.fressian/create-session-serializer.  
+   See clara.rules.durability.fressian for more specific details regarding this, including the extra
+   required dependency on Fressian notes found there.
+   The memory-facts-serializer is often a custom provided implemenation since the facts stored in
+   working memory are domain specific to the consumers' usage of the rules.
+   See the IWorkingMemorySerializer docs for more.
+
+   Options can be given as an optional argument.  These are passed through to the session-serializer
+   implementation.  See the description of standard options an ISessionSerializer should provide in
+   the ISessionSerializer docs.  Also, see the specific ISessionSerializer implementation docs for 
+   any non-standard options supported/not supported."
+  ([session :- (s/protocol eng/ISession)
+    session-serializer :- (s/protocol ISessionSerializer)
+    memory-facts-serializer :- (s/protocol IWorkingMemorySerializer)]
    (serialize-session-state session
                             session-serializer
                             memory-facts-serializer
                             {:with-rulebase? false}))
-  ([session session-serializer memory-facts-serializer opts]
+
+  ([session :- (s/protocol eng/ISession)
+    session-serializer :- (s/protocol ISessionSerializer)
+    memory-facts-serializer :- (s/protocol IWorkingMemorySerializer)
+    opts :- {s/Any s/Any}]
    (serialize-facts memory-facts-serializer
                     (serialize session-serializer session opts))))
 
-(defn deserialize-session-state
-  ([session-serializer memory-facts-serializer]
+(s/defn deserialize-session-state :- (s/protocol eng/ISession)
+  "Deserializes the session that was stored via the serialize-session-state function.  Similar to
+   what is described there, this uses the session-serializer implementor of ISessionSerializer to
+   deserialize the session and working memory state.  The memory-facts-serializer implementor of 
+   IWorkingMemorySerializer is used to deserialize the actual facts stored in working memory.
+
+   Options can be given as an optional argument.  These are passed through to the session-serializer
+   implementation.  See the description of standard options an ISessionSerializer should provide in
+   the ISessionSerializer docs.  Also, see the specific ISessionSerializer implementation docs for 
+   any non-standard options supported/not supported."
+  ([session-serializer :- (s/protocol ISessionSerializer)
+    memory-facts-serializer :- (s/protocol IWorkingMemorySerializer)]
    (deserialize-session-state session-serializer
                               memory-facts-serializer
                               nil))
-  ([session-serializer memory-facts-serializer opts]
+  
+  ([session-serializer :- (s/protocol ISessionSerializer)
+    memory-facts-serializer :- (s/protocol IWorkingMemorySerializer)
+    opts :- {s/Any s/Any}]
    (deserialize session-serializer
                 (deserialize-facts memory-facts-serializer)
                 opts)))

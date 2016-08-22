@@ -25,7 +25,9 @@
 (def rulebase-data (java.io.File/createTempFile "rulebase" ".dat"))
 (def session-data (java.io.File/createTempFile "session" ".dat"))
 
-(defn durability-test [serde-type]
+(defn durability-test
+  "Test runner to run different implementations of d/ISessionSerializer."
+  [serde-type]
   (let [s (mk-session 'clara.durability-rules)
 
         thresh50 (dr/->Threshold 50)
