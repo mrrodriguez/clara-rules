@@ -259,7 +259,6 @@
                   (let [c (some-> rdr .readObject resolve deref)]
                     (d/seq->sorted-map (.readObject rdr) c))))}}
 
-   ;; TODO will this be needed?
    "clj/mapentry"
    {:class clojure.lang.MapEntry
     :writer (reify WriteHandler
@@ -483,7 +482,7 @@
         (do-serialize [rulebase])
 
         ;; Otherwise memory needs to have facts extracted to return.
-        (let [{:keys [memory indexed-facts]} (d/session-memory-state memory)
+        (let [{:keys [memory indexed-facts]} (d/indexed-session-memory-state memory)
               sources (cond
                         (:with-rulebase? opts) [rulebase memory]
                         :else [memory])]
