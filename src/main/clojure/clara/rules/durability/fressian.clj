@@ -41,7 +41,7 @@
 
 ;;; TODO cache these based on class?  Will just speed up serialization.
 (defn record-map-constructor-name
-  "Return the map constructor for a record"
+  "Return the 'map->' prefix, factory constructor function for a Clojure record."
   [rec]
   (let [class-name (-> rec class .getName)
         idx (.lastIndexOf class-name (int \.))
@@ -63,6 +63,9 @@
   (.endList ^StreamingWriter w))
 
 (defn write-with-meta
+  "Writes the object to the writer under the given tag.  If the record has metadata, the metadata
+   will also be written.  read-with-meta will associated this metadata back with the object
+   when reading."
   ([w tag o]
    (write-with-meta w tag o (fn [^Writer w o] (.writeList w o))))
   ([^Writer w tag o write-fn]
@@ -79,13 +82,18 @@
            .readObject
            (into {})))
 
-(defn read-with-meta [^Reader rdr build-fn]
+(defn read-with-meta
+  "Reads an object from the reader that was written via write-with-meta.  If the object was written
+   with metadata the metadata will be associated on the object returned."
+  [^Reader rdr build-fn]
   (let [o (build-fn (.readObject rdr))
         m (read-meta rdr)]
     (cond-> o
       m (with-meta m))))
 
 (defn write-record
+  "Same as write-with-meta, but with Clojure record support.  The type of the record will
+   be preserved."
   [^Writer w tag rec]
   (let [m (meta rec)]
     (.writeTag w tag 3)
@@ -96,6 +104,8 @@
       (.writeNull w))))
 
 (defn read-record
+  "Same as read-with-meta, but with Clojure record support.  The type of the record will
+   be preserved."
   ([^Reader rdr]
    (read-record rdr nil))
   ([^Reader rdr add-fn]
@@ -159,6 +169,8 @@
                       d/cache-node)))}}))
 
 (def handlers
+  "A structure tying together the custom Fressian write and read handlers used
+   by FressianSessionSerializer's."
   {"java/class"
    {:class Class
     :writer (reify WriteHandler
@@ -444,21 +456,23 @@
                   (d/find-mem-idx (.readObject rdr))))}}})
 
 (def write-handlers
+  "All Fressian write handlers used by FressianSessionSerializer's."
   (into fres/clojure-write-handlers
         (map (fn [[tag {clazz :class wtr :writer}]]
                [clazz {tag wtr}]))
         handlers))
 
-(def write-handler-lookup
-  (-> write-handlers
-      fres/associative-lookup
-      fres/inheritance-lookup))
-
 (def read-handlers
+  "All Fressian read handlers used by FressianSessionSerializer's."
     (->> handlers
        vals
        (into fres/clojure-read-handlers
              (mapcat :readers))))
+
+(def write-handler-lookup
+  (-> write-handlers
+      fres/associative-lookup
+      fres/inheritance-lookup))
 
 (def read-handler-lookup
   (fres/associative-lookup read-handlers))
@@ -517,7 +531,8 @@
                                        opts))))))
 
 (s/defn create-session-serializer
-  "Creates an instance of FressianSessionSerializer which implements the d/ISessionSerializer protocol.
+  "Creates an instance of FressianSessionSerializer which implements d/ISessionSerializer by using
+   Fressian serialization for the session structures.
    
    In the one arity case, takes either an input stream or an output stream.  This arity is intended for
    creating a Fressian serializer instance that will only be used for serialization or deserialization,
