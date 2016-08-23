@@ -34,7 +34,10 @@
             ReadHandler]
            [java.util
             ArrayList
-            IdentityHashMap]))
+            IdentityHashMap]
+           [java.io
+            InputStream
+            OutputStream]))
 
 ;;; TODO cache these based on class?  Will just speed up serialization.
 (defn record-map-constructor-name
@@ -513,8 +516,25 @@
                                          (fres/read-object rdr))
                                        opts))))))
 
-(defn create-session-serializer
-  ([in+out-stream]
-   (create-session-serializer in+out-stream in+out-stream))
-  ([in-stream out-stream]
+(s/defn create-session-serializer
+  "Creates an instance of FressianSessionSerializer which implements the d/ISessionSerializer protocol.
+   
+   In the one arity case, takes either an input stream or an output stream.  This arity is intended for
+   creating a Fressian serializer instance that will only be used for serialization or deserialization,
+   but not both.  e.g. This is often convenient if serialization and deserialization are not done from
+   the same process.  If it is to be used for serialization, then the stream given should be an output
+   stream.  If it is to be used for deserialization, then the stream to be given should be an
+   input stream.
+
+   In the two arity case, takes an input stream and an output stream.  These will be used for
+   deserialization and serialization within the created Fressian serializer instance, respectively."
+  ([in-or-out-stream :- (s/pred (some-fn #(instance? InputStream %)
+                                         #(instance? OutputStream %))
+                                "java.io.InputStream or java.io.OutputStream")]
+   (if (instance? InputStream in-or-out-stream)
+     (create-session-serializer in-or-out-stream nil)
+     (create-session-serializer nil in-or-out-stream)))
+
+  ([in-stream :- (s/maybe InputStream)
+    out-stream :- (s/maybe OutputStream)]
    (->FressianSessionSerializer in-stream out-stream)))

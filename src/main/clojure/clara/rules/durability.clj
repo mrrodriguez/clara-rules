@@ -148,10 +148,16 @@
 (defrecord MemIdx [idx])
 
 (defn find-index
+  "Finds the fact in the fact->index-map.  The fact is assumed to be a key.  Returns the value for
+   that key, which should just be a numeric index used to track where facts are stubbed out with
+   MemIdx's in working memory so that they can be 'put back' later."
   [^java.util.Map fact->index-map fact]
   (.get fact->index-map fact))
 
 (defn- find-index-or-add!
+  "The same as find-index, but if the fact is not found, it is added to the map (destructively)
+   and the index it was mapped to is returned.
+   This implies that the map must support the mutable map interface, namely java.util.Map.put()."
   [^java.util.Map fact->index-map fact]
   (or (.get fact->index-map fact)
       (let [n (.size fact->index-map)
@@ -159,7 +165,7 @@
         (.put fact->index-map fact idx)
         idx)))
 
-;;; TODO Share from clara.rules.memory potentially.
+;;; Similar what is in clara.rules.memory currently, but just copied for now to avoid dependency issues.
 (defn- update-vals [m update-fn]
   (->> m
        (reduce-kv (fn [m k v]
@@ -274,9 +280,15 @@
 ;;;; Commonly useful session serialization helpers.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def ^:private ^:dynamic *mem-facts* nil)
+(def ^:dynamic *mem-facts*
+  "Useful for ISessionSerializer implementors to have a reference to the facts deserialized via 
+   IWorkingMemorySerializer that are needed to restore working memory whose locations were stubbed
+   with a MemIdx during serialization."
+  nil)
 
-(defn find-mem-idx [idx]
+(defn find-mem-idx
+  "Finds the fact from *mem-facts* at the given index.  See docs on *mem-facts* for more."
+  [idx]
   (get *mem-facts* idx))
 
 (defn indexed-session-memory-state
@@ -556,7 +568,7 @@
     memory-facts-serializer :- (s/protocol IWorkingMemorySerializer)]
    (deserialize-session-state session-serializer
                               memory-facts-serializer
-                              nil))
+                              {}))
   
   ([session-serializer :- (s/protocol ISessionSerializer)
     memory-facts-serializer :- (s/protocol IWorkingMemorySerializer)
