@@ -14,19 +14,43 @@
             [clojure.walk :as walk]
             [schema.core :as sc]
             [schema.macros :as sm])
-
-  (:import [clara.rules.engine ProductionNode QueryNode HashJoinNode ExpressionJoinNode
-            NegationNode TestNode AccumulateNode AlphaNode LocalTransport
-            LocalSession Accumulator]
-           [java.beans PropertyDescriptor]))
+  (:import [clara.rules.engine
+            ProductionNode
+            QueryNode
+            AlphaNode
+            RootJoinNode
+            HashJoinNode
+            ExpressionJoinNode
+            NegationNode
+            NegationWithJoinFilterNode
+            TestNode
+            AccumulateNode
+            AccumulateWithJoinFilterNode
+            LocalTransport
+            LocalSession
+            Accumulator]
+           [java.beans
+            PropertyDescriptor]))
 
 ;; Protocol for loading rules from some arbitrary source.
 (defprotocol IRuleSource
   (load-rules [source]))
 
-;; These nodes exist in the beta network.
-(def BetaNode (sc/either ProductionNode QueryNode HashJoinNode ExpressionJoinNode
-                         NegationNode TestNode AccumulateNode))
+(sc/defschema BetaNode
+  "These nodes exist in the beta network."
+  (sc/pred (fn [x]
+             (some #(instance? % x)
+                   #{ProductionNode
+                     QueryNode
+                     RootJoinNode
+                     HashJoinNode
+                     ExpressionJoinNode
+                     NegationNode
+                     NegationWithJoinFilterNode
+                     TestNode
+                     AccumulateNode
+                     AccumulateWithJoinFilterNode}))
+           "Some beta node type"))
 
 ;; A rulebase -- essentially an immutable Rete network with a collection of
 ;; alpha and beta nodes and supporting structure.

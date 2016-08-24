@@ -3,6 +3,7 @@
             [clara.rules.memory :as mem]
             [clara.rules.engine :as eng]
             [clara.rules.compiler :as com]
+            [schema.core :as s]
             [clojure.data.fressian :as fres]
             [clojure.java.io :as jio]
             [clojure.main :as cm])
@@ -39,7 +40,6 @@
             InputStream
             OutputStream]))
 
-;;; TODO cache these based on class?  Will just speed up serialization.
 (defn record-map-constructor-name
   "Return the 'map->' prefix, factory constructor function for a Clojure record."
   [rec]
@@ -47,11 +47,15 @@
         idx (.lastIndexOf class-name (int \.))
         ns-nom (.substring class-name 0 idx)
         nom (.substring class-name (inc idx))]
+    ;; There could be some sort of cache for these based on class.  It may speed
+    ;; up serialization, but doesn't seem worth it yet.
     (symbol (str (cm/demunge ns-nom)
                  "/map->"
                  (cm/demunge nom)))))
 
-(defn write-map [^Writer w m]
+(defn write-map
+  "Writes a map as Fressian with the tag 'map' and all keys cached."
+  [^Writer w m]
   (.writeTag w "map" 1)
   (.beginClosedList ^StreamingWriter w)
   (reduce-kv

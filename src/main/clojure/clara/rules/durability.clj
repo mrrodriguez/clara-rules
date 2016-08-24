@@ -27,9 +27,16 @@
 ;;;; Rulebase serialization helpers.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def ^:dynamic *node-id->node-cache* nil)
+(def ^:dynamic *node-id->node-cache*
+  "Useful for caching rulebase network nodes by id during serialization and deserialization to
+   avoid creating multiple object instances for the same node."
+  nil)
 
 (def ^:dynamic *compile-expr-fn*
+  "Similar to what is done in clara.rules.compiler, this is a function used to compile
+   expressions used in nodes of the rulebase network.  A common function would cache
+   evaluated expressions by node-id and expression form to avoid duplicate evalutation
+   of the same expressions."
   nil)
 
 (defn- add-node-fn [node fn-key meta-key]
@@ -63,23 +70,20 @@
                                           (:accum-expr (meta node)))
                        (:env node))))
 
-(defn node-id->node [node-id]
+(defn node-id->node
+  "Lookup the node for the given node-id in the *node-id->node-cache* cache."
+  [node-id]
   (@*node-id->node-cache* node-id))
 
-(defn cache-node [node]
+(defn cache-node
+  "Cache the node in the *node-id->node-cache* if it is not already there.
+   Returns the node."
+  [node]
   (if-let [node-id (:id node)]
     (do
       (vswap! *node-id->node-cache* assoc node-id node)
       node)
     node))
-
-;;; TODO this is print-method specific so should be moved there.
-(def ^:dynamic *serializing-session*
-  "When this is true, any Clara durability specific `print-method` impl's 
-   will be activated.  This may clash with any other `print-method` impl's
-   currently in use by the caller.  When this is false, `print-method`
-   will ignore any specific Clara `print-method` impl's."
-  false)
 
 (def ^:dynamic *clj-record-holder*
   "A cache for writing and reading Clojure records.  At write time, an IdentityHashMap can be
@@ -89,26 +93,40 @@
    of references to the same record instance later."
   nil)
 
-(defn clj-record-fact->idx [fact]
+(defn clj-record-fact->idx
+  "Gets the numeric index for the given fact from the *clj-record-holder*."
+  [fact]
   (.get ^Map *clj-record-holder* fact))
 
-(defn clj-record-holder-add-fact-idx! [fact]
+(defn clj-record-holder-add-fact-idx!
+  "Adds the fact to the *clj-record-holder* with a new index.  This can later be retrieved
+   with clj-record-fact->idx."
+  [fact]
   ;; Note the values will be int type here.  This shouldn't be a problem since they
   ;; will be read later as longs and both will be compatible with the index lookup
   ;; at read-time.  This could have a cast to long here, but it would waste time
   ;; unnecessarily.
   (.put ^Map *clj-record-holder* fact (.size ^Map *clj-record-holder*)))
 
-(defn clj-record-idx->fact [id]
+(defn clj-record-idx->fact
+  "The reverse of clj-record-fact->idx.  Returns a fact for the given index found
+   in *clj-record-holder*."
+  [id]
   (.get ^List *clj-record-holder* id))
 
-(defn clj-record-holder-add-fact! [fact]
+(defn clj-record-holder-add-fact!
+  "The reverse of clj-record-holder-add-fact-idx!.  Adds the fact to the *clj-record-holder*
+   at the next available index."
+  [fact]
   (.add ^List *clj-record-holder* fact)
   fact)
 
-(defn create-map-entry [k v]
-  ;; Using the ctor instead of clojure.lang.MapEntry/create since this method
-  ;; doesn't exist prior to clj 1.8.0
+(defn create-map-entry
+  "Helper to create map entries.  This can be useful for serialization implementations
+   on clojure.lang.MapEntry types.
+   Using the ctor instead of clojure.lang.MapEntry/create since this method
+   doesn't exist prior to clj 1.8.0"
+  [k v]
   (clojure.lang.MapEntry. k v))
 
 ;;;; To deal with http://dev.clojure.org/jira/browse/CLJ-1733 we need to impl a way to serialize
@@ -116,26 +134,39 @@
 ;;;; arbitrary comparators are used for the sorted coll, the comparator has to be restored
 ;;;; explicitly since arbitrary functions are not serializable in any stable way right now.
 
-(defn sorted-comparator-name [^clojure.lang.Sorted s]
+(defn sorted-comparator-name
+  "Sorted collections are not easily serializable since they have an opaque function object instance
+   associated with them.  To deal with that, the sorted collection can provide a ::comparator-name 
+   in the metadata that indicates a symbolic name for the function used as the comparator.  With this
+   name the function can be looked up and associated to the sorted collection again during
+   deserialization time.
+   * If the sorted collection has metadata ::comparator-name, then the value should be a name 
+   symbol and is returned.  
+   * If the sorted collection has the clojure.lang.RT/DEFAULT_COMPARATOR, returns nil.
+   * If neither of the above are true, an exception is thrown indicating that there is no way to provide
+   a useful name for this sorted collection, so it won't be able to be serialized."
+  [^clojure.lang.Sorted s]
   (let [cname (-> s meta ::comparator-name)]
 
     ;; Fail if reliable serialization of this sorted coll isn't possible.
     (when (and (not cname)
                (not= (.comparator s) clojure.lang.RT/DEFAULT_COMPARATOR))
-      (throw (ex-info (str "Cannot serialize (via print-method) sorted collection with non-default"
-                           " comparator because no :print-method/comparator-name provided in metadata.")
+      (throw (ex-info (str "Cannot serialize sorted collection with non-default"
+                           " comparator because no :clara.rules.durability/comparator-name provided in metadata.")
                       {:sorted-coll s
                        :comparator (.comparator s)})))
 
     cname))
 
 (defn seq->sorted-set
+  "Helper to create a sorted set from a seq given an optional comparator."
   [s ^java.util.Comparator c]
   (if c
     (clojure.lang.PersistentTreeSet/create c (seq s))
     (clojure.lang.PersistentTreeSet/create (seq s))))
 
 (defn seq->sorted-map
+  "Helper to create a sorted map from a seq given an optional comparator."
   [s ^java.util.Comparator c]
   (if c
     (clojure.lang.PersistentTreeMap/create c ^clojure.lang.ISeq (sequence cat s))
@@ -145,6 +176,12 @@
 ;;;; Memory serialization via "indexing" working memory facts.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;;; A placeholder to put in working memory locations where consumer-defined, domain-specific facts
+;;; were stored at.  This placeholder is used to track the position of a fact so that the fact can
+;;; be serialized externally by IWorkingMemorySerializer and later the deserialized fact can be put
+;;; back in place of this placeholder.
+;;; See the ISessionSerializer and IWorkingMemorySerializer protocols and
+;;; indexed-session-memory-state for more details.
 (defrecord MemIdx [idx])
 
 (defn find-index
