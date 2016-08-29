@@ -399,6 +399,9 @@
                 :activation-group-fn
                 :alphas-fn))))
 
+(defn create-default-get-alphas-fn [rulebase]
+  (@#'com/create-get-alphas-fn type ancestors rulebase))
+
 (defn assemble-restored-session
   "Builds a Clara session from the given rulebase and memory components.
    Note!  This function should not typically be used.  It is left public to assist in ISessionSerializer 
@@ -423,7 +426,7 @@
                          #(eng/options->activation-group-fn {:activation-group-fn %}))
                  ;; TODO: Memory doesn't seem to ever need this or use it.  Can we just remove it from memory?
                  (update :get-alphas-fn
-                         #(or % (@#'com/create-get-alphas-fn type ancestors rulebase))))
+                         #(or % (create-default-get-alphas-fn rulebase))))
 
         {:keys [listeners transport get-alphas-fn]} opts
         
