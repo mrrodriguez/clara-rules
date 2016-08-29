@@ -38,18 +38,17 @@
 
 (sc/defschema BetaNode
   "These nodes exist in the beta network."
-  (sc/pred (fn [x]
-             (some #(instance? % x)
-                   #{ProductionNode
-                     QueryNode
-                     RootJoinNode
-                     HashJoinNode
-                     ExpressionJoinNode
-                     NegationNode
-                     NegationWithJoinFilterNode
-                     TestNode
-                     AccumulateNode
-                     AccumulateWithJoinFilterNode}))
+  (sc/pred (comp #{ProductionNode
+                   QueryNode
+                   RootJoinNode
+                   HashJoinNode
+                   ExpressionJoinNode
+                   NegationNode
+                   NegationWithJoinFilterNode
+                   TestNode
+                   AccumulateNode
+                   AccumulateWithJoinFilterNode}
+                 class)
            "Some beta node type"))
 
 ;; A rulebase -- essentially an immutable Rete network with a collection of

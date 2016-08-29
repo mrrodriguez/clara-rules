@@ -79,11 +79,9 @@
   "Cache the node in the *node-id->node-cache* if it is not already there.
    Returns the node."
   [node]
-  (if-let [node-id (:id node)]
-    (do
-      (vswap! *node-id->node-cache* assoc node-id node)
-      node)
-    node))
+  (when-let [node-id (:id node)]
+    (vswap! *node-id->node-cache* assoc node-id node))
+  node)
 
 (def ^:dynamic *clj-record-holder*
   "A cache for writing and reading Clojure records.  At write time, an IdentityHashMap can be
@@ -351,7 +349,7 @@
                             ;; It is not generally safe to reduce or seq over a mutable Java Map.
                             ;; One example is IdentityHashMap.  The iterator of the IdentityHashMap
                             ;; mutates the map entry values in place and it is never safe to call a
-                            ;; Iteratore.hasNext() when not finished working with the previous value
+                            ;; Iterator.hasNext() when not finished working with the previous value
                             ;; returned from Iteratore.next().  This is subtle and is actually only a
                             ;; problem in JDK6 for IdentityHashMap.  JDK7+ appear to have discontinued
                             ;; this mutable map entry.  However, this is not something to rely on and

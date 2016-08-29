@@ -504,9 +504,9 @@
 
         ;; Otherwise memory needs to have facts extracted to return.
         (let [{:keys [memory indexed-facts]} (d/indexed-session-memory-state memory)
-              sources (cond
-                        (:with-rulebase? opts) [rulebase memory]
-                        :else [memory])]
+              sources (if (:with-rulebase? opts)
+                        [rulebase memory]
+                        [memory])]
 
           (do-serialize sources)
           
