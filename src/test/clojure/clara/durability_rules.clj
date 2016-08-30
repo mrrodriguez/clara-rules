@@ -28,7 +28,7 @@
 (defrecord UnpairedWindSpeed [ws])
 
 (defrule find-wind-speeds-without-temp
-    "Rule using NegationNode"
+  "Rule using NegationNode"
   [?w <- WindSpeed (= ?loc location)]
   [:not [Temperature (= ?loc location)]]
   =>

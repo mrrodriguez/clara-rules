@@ -1,4 +1,8 @@
 (ns clara.rules.durability.fressian
+  "A default Fressian-based implementation of d/ISessionSerializer.
+
+   Note!  Currently this only supports the clara.rules.memory.PersistentLocalMemory implementation
+          of memory."
   (:require [clara.rules.durability :as d]
             [clara.rules.memory :as mem]
             [clara.rules.engine :as eng]
@@ -81,7 +85,7 @@
          (.writeObject w m)
          (.writeNull w))))))
 
-(defn read-meta [^Reader rdr]
+(defn- read-meta [^Reader rdr]
   (some->> rdr
            .readObject
            (into {})))
@@ -546,7 +550,10 @@
    input stream.
 
    In the two arity case, takes an input stream and an output stream.  These will be used for
-   deserialization and serialization within the created Fressian serializer instance, respectively."
+   deserialization and serialization within the created Fressian serializer instance, respectively.
+
+   Note!  Currently this only supports the clara.rules.memory.PersistentLocalMemory implementation
+          of memory."
   ([in-or-out-stream :- (s/pred (some-fn #(instance? InputStream %)
                                          #(instance? OutputStream %))
                                 "java.io.InputStream or java.io.OutputStream")]

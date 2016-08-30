@@ -1,6 +1,6 @@
 (ns clara.rules.durability
   "Support for persisting Clara sessions to an external store.
-   Provideds the ability to store and restore an entire session working memory state.  The restored
+   Provides the ability to store and restore an entire session working memory state.  The restored
    session is able to have additional insert, retract, query, and fire rule calls performed 
    immediately after.
 
@@ -45,6 +45,9 @@
          (*compile-expr-fn* (:id node) (meta-key (meta node)))))
 
 (defn add-rhs-fn [node]
+  ;; The RHS expression may need to be compiled within the namespace scope of specifically declared
+  ;; :ns-name.  The LHS expressions do not (currently) need or support this path.
+  ;; See https://github.com/rbrush/clara-rules/issues/178 for more details.
   (with-bindings (if-let [ns (some-> node
                                      :production
                                      :ns-name
@@ -76,8 +79,7 @@
   (@*node-id->node-cache* node-id))
 
 (defn cache-node
-  "Cache the node in the *node-id->node-cache* if it is not already there.
-   Returns the node."
+  "Cache the node in the *node-id->node-cache*.  Returns the node."
   [node]
   (when-let [node-id (:id node)]
     (vswap! *node-id->node-cache* assoc node-id node))
@@ -211,8 +213,7 @@
 (defn- index-bindings
   [seen bindings]
   (update-vals bindings
-               #(or (find-index seen %)
-                    %)))
+               #(find-index-or-add! seen %)))
 
 (defn- index-update-bindings-keys [index-update-bindings-fn
                                    bindings-map]
@@ -343,7 +344,10 @@
      references correctly.  This is generally true for most serialization mechanisms.
 
    Note!  This function should not typically be used.  It is left public to assist in ISessionSerializer
-          durability implementations.  Use clara.rules/mk-session typically to make rule sessions."
+          durability implementations.  Use clara.rules/mk-session typically to make rule sessions.
+
+   Note!  Currently this only supports the clara.rules.memory.PersistentLocalMemory implementation
+          of memory."
   [memory]
   (let [vec-indexed-facts (fn [^java.util.Map fact->index-map]
                             ;; It is not generally safe to reduce or seq over a mutable Java Map.
@@ -413,7 +417,10 @@
    * :get-alphas-fn 
 
    If the options are not provided, they will default to the Clara session defaults.
-   These are all described in detail in clara.rules/mk-session docs."
+   These are all described in detail in clara.rules/mk-session docs.
+
+   Note!  Currently this only supports the clara.rules.memory.PersistentLocalMemory implementation
+          of memory."
   [rulebase memory opts]
   (let [opts (-> opts
                  (assoc :rulebase rulebase)
