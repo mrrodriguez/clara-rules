@@ -354,7 +354,7 @@
                             ;; One example is IdentityHashMap.  The iterator of the IdentityHashMap
                             ;; mutates the map entry values in place and it is never safe to call a
                             ;; Iterator.hasNext() when not finished working with the previous value
-                            ;; returned from Iteratore.next().  This is subtle and is actually only a
+                            ;; returned from Iterator.next().  This is subtle and is actually only a
                             ;; problem in JDK6 for IdentityHashMap.  JDK7+ appear to have discontinued
                             ;; this mutable map entry.  However, this is not something to rely on and
                             ;; JDK6 support is still expected to work for Clara.  The only trasducer
