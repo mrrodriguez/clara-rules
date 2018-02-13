@@ -211,6 +211,12 @@
                  (#{'clojure.core/= 'clojure.core/==} (qualify-when-sym op))))))
 
 (def ^:dynamic *compile-ctx* nil)
+;;(defmacro dbg [x] `(let [x# ~x] (println '~x) (prn x#) x#))
+(def ^:private eval-batch-size 500)
+(def ^:private pending-evals (atom []))
+
+(defn stage-eval! [expr]
+  {::staged-eval (dec (count (swap! pending-evals conj expr)))})
 
 (defn try-eval
   "Evals the given `expr`.  If an exception is thrown, it is caught and an
@@ -1416,7 +1422,7 @@
         ;; This prevents redundant compilation and avoids having a Rete node
         ;; :id that has had its expressions compiled into different
         ;; compiled functions.
-        compile-expr (memoize (fn [id expr] (try-eval expr)))
+        compile-expr (memoize (fn [id expr] (stage-eval! expr)))
 
         ;; Sort the ids to compile based on dependencies.
         ids-to-compile (loop [pending-ids (into #{} (concat (keys id-to-production-node) (keys id-to-condition-node)))
@@ -1517,27 +1523,27 @@
                                   (sc/optional-key :env) {sc/Keyword sc/Any}
                                   :children [sc/Num]}]
   [alpha-nodes :- [schema/AlphaNode]]
-  (for [{:keys [condition beta-children env]} alpha-nodes
-        :let [{:keys [type constraints fact-binding args]} condition
-              cmeta (meta condition)
-              alpha-expr (with-meta (compile-condition
-                                      type (first args)  constraints
-                                      fact-binding env)
-                           ;; Remove all metadata but file and line number
-                           ;; to protect from evaluating usafe metadata
-                           ;; See PR 243 for more detailed discussion
-                           (select-keys cmeta [:line :file]))]]
+  (vec (for [{:keys [condition beta-children env]} alpha-nodes
+             :let [{:keys [type constraints fact-binding args]} condition
+                   cmeta (meta condition)
+                   alpha-expr (with-meta (compile-condition
+                                          type (first args)  constraints
+                                          fact-binding env)
+                                ;; Remove all metadata but file and line number
+                                ;; to protect from evaluating usafe metadata
+                                ;; See PR 243 for more detailed discussion
+                                (select-keys cmeta [:line :file]))]]
 
-    (with-meta
-      (cond-> {:type (effective-type type)
-               :alpha-fn (binding [*file* (or (:file cmeta) *file*)
-                                   *compile-ctx* {:condition condition
-                                                  :env env
-                                                  :msg "compiling alpha node"}]
-                           (try-eval alpha-expr))
-               :children beta-children}
-        env (assoc :env env))
-      {:alpha-expr alpha-expr})))
+         (with-meta
+           (cond-> {:type (effective-type type)
+                    :alpha-fn (binding [*file* (or (:file cmeta) *file*)
+                                        *compile-ctx* {:condition condition
+                                                       :env env
+                                                       :msg "compiling alpha node"}]
+                                (stage-eval! alpha-expr))
+                    :children beta-children}
+             env (assoc :env env))
+           {:alpha-expr alpha-expr}))))
 
 ;; Wrap the fact-type so that Clojure equality and hashcode semantics are used
 ;; even though this is placed in a Java map.
@@ -1666,9 +1672,43 @@
                                         [(:name (:query query-node)) query-node]]]
                              entry))
 
+        evals (into {}
+                    (comp (partition-all eval-batch-size)
+                          (mapcat try-eval)
+                          (map-indexed vector))
+                    @pending-evals)
+        _ (reset! pending-evals [])
+        add-evaled-exprs (fn add-evaled-exprs [{:as n :keys [children]}]
+                           (let [[k evaled] (cond
+                                              (:activation n)
+                                              (when-let [e (evals (::staged-eval (:activation n)))]
+                                                [:activation e])
+
+                                              (:join-filter-fn n)
+                                              (when-let [e (evals (::staged-eval (:join-filter-fn n)))]
+                                                [:join-filter-fn e])
+
+                                              ;; TODO: Would have to handle all node types
+                                              )
+                                 
+                                 up-cs (fn [cs]
+                                         (into (empty cs)
+                                               (map add-evaled-exprs)
+                                               cs))]
+                             (cond-> n
+                               (some? evaled)
+                               (assoc k evaled)
+                               
+                               (seq children)
+                               (update :children up-cs))))
+                
         ;; type, alpha node tuples.
         alpha-nodes (for [{:keys [type alpha-fn children env] :as alpha-map} alpha-fns
-                          :let [beta-children (map id-to-node children)]]
+                          :let [alpha-fn (evals (::staged-eval alpha-fn))
+                                beta-children (into []
+                                                    (comp (map id-to-node)
+                                                          (map add-evaled-exprs))
+                                                    children)]]
                       [type (with-meta
                               (eng/->AlphaNode env beta-children alpha-fn)
                               {:alpha-expr (:alpha-expr (meta alpha-map))})])
@@ -1730,7 +1770,7 @@
         beta-root-ids (-> beta-graph :forward-edges (get 0)) ; 0 is the id of the virtual root node.
         beta-roots (vals (select-keys beta-tree beta-root-ids))
         alpha-nodes (compile-alpha-nodes (to-alpha-graph beta-graph))
-
+        
         ;; The fact-type uses Clojure's type function unless overridden.
         fact-type-fn (or (get options :fact-type-fn)
                          type)
