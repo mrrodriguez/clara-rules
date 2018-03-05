@@ -1,19 +1,15 @@
 (ns clara.test-rules
-  (:require-macros [cljs.test :refer (is deftest run-tests testing)]
-                   [clara.test-rules-data])
-  (:require [cljs.test :as t]
+  (:require-macros )
+  (:require [cljs.test :as t
+             :refer-macros [is deftest run-tests testing]]
             [clara.rules.engine :as eng]
             [clara.rules.accumulators :as acc]
             [clara.rules :refer [insert retract fire-rules query insert!]
                          :refer-macros [defrule defsession defquery]]
             [clara.rules.testfacts :refer [->Temperature Temperature
                                            ->WindSpeed WindSpeed
-                                           ->ColdAndWindy ColdAndWindy]]))
-
-(comment
-;; Launch browser repl.
- (cemerick.piggieback/cljs-repl :repl-env (cemerick.austin/exec-env))
-)
+                                           ->ColdAndWindy ColdAndWindy]]
+            [clara.test-rules-data]))
 
 (defn- has-fact? [token fact]
   (some #{fact} (map first (:matches token))))
