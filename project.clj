@@ -26,17 +26,14 @@
   :javac-options ["-target" "1.6" "-source" "1.6"]
   :clean-targets ^{:protect false} ["resources/public/js" "target"]
   :aliases {"test-cljs" ["do" "clean"
-                         ["with-profiles" "+cljs-test"
+                         ["with-profile" "provided, cljs-test"
                           ["cljsbuild" "test"]]]}
   :profiles {:provided {:dependencies [[org.clojure/clojurescript "1.7.170"]]}
              :recent-clj {:dependencies [^:replace [org.clojure/clojure "1.9.0"]
                                          ^:replace [org.clojure/clojurescript "1.9.946"]]}
-             :dev {:dependencies [[org.clojure/math.combinatorics "0.1.3"]
-                                  [org.clojure/data.fressian "0.2.1"]]}
-             :cljs-dev [:dev
-                        ;; figwheel-sidecar needs a more recent cljs to work correctly in a popular repl
-                        ;; client like the emacs cider repl.
-                        :recent-clj
+             ;; figwheel-sidecar needs a more recent cljs to work correctly in a popular repl client
+             ;; like the emacs cider repl.
+             :cljs-dev [:recent-clj
                         {:dependencies [[figwheel-sidecar "0.5.15"]
                                         [com.cemerick/piggieback "0.2.2"]
                                         [binaryage/devtools "0.9.0"]]
@@ -45,6 +42,7 @@
                          {:builds {:app
                                    ;; Simple mode compilation for tests.
                                    {:source-paths ["src/test/clojurescript" "src/test/common"]
+                                    :figwheel {}
                                     :compiler {:main "clara.test"
                                                :output-to "resources/public/js/simple.js"
                                                :output-dir "resources/public/js/out"
@@ -55,6 +53,12 @@
                                                :pretty-print true
                                                :closure-defines {goog.DEBUG true}
                                                :optimizations :none}}}}}]
+             ;; NOTE: for smoother figwheel integration, :dev needs to include :cljs-dev for now.
+             ;; This means that :recent-clj is also loaded in :dev. However, tests can still be
+             ;; ran against older versions of clj/cljs that Clara supports.
+             :dev [:cljs-dev
+                   {:dependencies [[org.clojure/math.combinatorics "0.1.3"]
+                                   [org.clojure/data.fressian "0.2.1"]]}]
              :cljs-test {:cljsbuild
                          {:builds {:simple
                                    {:source-paths ["src/test/clojurescript" "src/test/common"]
