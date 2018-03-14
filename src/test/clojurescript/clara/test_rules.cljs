@@ -1,5 +1,4 @@
 (ns clara.test-rules
-  (:require-macros )
   (:require [cljs.test :as t
              :refer-macros [is deftest run-tests testing]]
             [clara.rules.engine :as eng]
@@ -9,7 +8,7 @@
             [clara.rules.testfacts :refer [->Temperature Temperature
                                            ->WindSpeed WindSpeed
                                            ->ColdAndWindy ColdAndWindy]]
-            [clara.test-rules-data]))
+            [clara.test-rules-data :as trd :include-macros true]))
 
 (defn- has-fact? [token fact]
   (some #{fact} (map first (:matches token))))
@@ -90,7 +89,7 @@
 
 (defsession my-session 'clara.test-rules)
 (defsession my-session-map 'clara.test-rules :fact-type-fn :type)
-(defsession my-session-data (clara.test-rules-data/weather-rules))
+(defsession my-session-data (trd/weather-rules))
 
 (deftest test-number-query
   (is (= (-> my-session

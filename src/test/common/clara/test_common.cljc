@@ -25,7 +25,7 @@
   []
   [:temperature [{temperature :temperature}] (< temperature 20) (= ?t temperature)])
 
-(defsession my-session [test-rule cold-query] :fact-type-fn :type)
+(defsession my-session [`'test-rule `'cold-query] :fact-type-fn :type)
 
 (deftest test-simple-defrule
   (let [t {:type :temperature
@@ -62,7 +62,7 @@
   [:threshold [{value :value}] (= ?threshold value)]
   [?low-temps <- (acc/all) :from [:temperature [{value :value}] (< value ?threshold)]])
 
-(defsession accum-with-filter-session [temps-below-threshold] :fact-type-fn :type)
+(defsession accum-with-filter-session [`'temps-below-threshold] :fact-type-fn :type)
 
 (deftest test-accum-with-filter
 
@@ -96,7 +96,7 @@
   [:threshold [{value :value}] (= ?threshold value)]
   [:not [:temperature [{value :value}] (< value ?threshold)]])
 
-(defsession negation-with-filter-session [none-below-threshold] :fact-type-fn :type)
+(defsession negation-with-filter-session [`'none-below-threshold] :fact-type-fn :type)
 
 (deftest test-negation-with-filter
 

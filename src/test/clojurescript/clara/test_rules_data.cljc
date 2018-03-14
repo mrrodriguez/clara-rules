@@ -19,7 +19,7 @@
             :constraints []}]
     :params #{}}])
 
-(defn weather-rules
+(defmacro weather-rules
   "Return some weather rules"
   []
-  the-rules)
+  `'~the-rules)
