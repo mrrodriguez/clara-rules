@@ -9,6 +9,14 @@
 
             [clara.rules.accumulators :as acc]))
 
+#?(:clj
+   (defonce report-once
+     (do
+       (println "*********************************************")
+       (println (format "Using Clojure version: %s" *clojure-version*))
+       (println (format "Using JDK version: %s" (System/getProperty "java.version")))
+       (println "*********************************************"))))
+
 (defn- has-fact? [token fact]
   (some #{fact} (map first (:matches token))))
 
