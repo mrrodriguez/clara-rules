@@ -31,35 +31,45 @@
             "test-all-jdk11" ["with-profile" "+jdk11" "test-all"]}
   :profiles
   {:cljs-common {:dependencies [[org.clojure/clojurescript "1.10.339"]]
-                 :source-paths ["src"]
-                 :cljsbuild {:test-commands {"phantom-simple" ["phantomjs"
-                                                               "src/test/js/runner.js"
-                                                               "src/test/html/simple.html"]
-
-                                             "phantom-advanced" ["phantomjs"
-                                                                 "src/test/js/runner.js"
-                                                                 "src/test/html/advanced.html"]}}
-                 :compiler {:npm-deps false}}
-   :figwheel-dev {:source-paths ["src/test/clojurescript" "src/test/common"]
-                  :dependencies [[figwheel-sidecar "0.5.18"]]
+                 :source-paths ["src/test/clojure" "src/test/common" "src/test/clojurescript"]
+                 :resource-paths ^:replace ["resources"]}
+   :figwheel-dev {:dependencies [[figwheel-sidecar "0.5.18"]]
+                  :figwheel {:server-port 3449
+                             :validate-config true}
                   :cljsbuild {:builds
-                              {:dev-repl {:source-paths ["src/test/clojurescript" "src/test/common"]
-                                          :figwheel true
-                                          :compiler {:output-to "resources/public/js/simple.js"
-                                                     :output-dir "resources/public/js/out"
-                                                     :asset-path "js/out"
-                                                     :optimizations :none}}
+                              {:dev-repl
+                               {:source-paths ["src/test/common" "src/test/clojurescript"]
+                                :compiler {:main clara.test-rules
+                                           :output-to "resources/public/js/out/app.js"
+                                           :output-dir "resources/public/js/out"
+                                           :asset-path "js/out"
+                                           :optimizations :none
+                                           :npm-deps false}}}}}
+   :test {:cljsbuild {:builds
+                      {:simple
+                       {:source-paths ["src/test/common" "src/test/clojurescript"]
+                        :compiler {:main clara.test-rules
+                                   :output-to "resources/public/js/out/app.js"
+                                   :asset-path "js/out"
+                                   :optimizations :whitespace
+                                   :npm-deps false}}
 
-                               :simple {:id "simple"
-                                        :source-paths ["src/test/clojurescript" "src/test/common"]
-                                        :compiler {:output-to "target/js/simple.js"
-                                                   :optimizations :whitespace}}
+                       ;; Advanced mode compilation for tests.
+                       :advanced
+                       {:source-paths ["src/test/common" "src/test/clojurescript"]
+                        :compiler {:main clara.test-rules
+                                   :output-to "resources/public/js/out/app.js"
+                                   :asset-path "js/out"
+                                   :optimizations :advanced
+                                   :npm-deps false}}}
+                      :test-commands {"phantom-simple" ["phantomjs"
+                                                        "src/test/js/runner.js"
+                                                        "src/test/html/simple.html"]
 
-                               ;; Advanced mode compilation for tests.
-                               :advanced {:id "advanced"
-                                          :source-paths ["src/test/clojurescript" "src/test/common"]
-                                          :compiler {:output-to "target/js/advanced.js"
-                                                     :optimizations :advanced}}}}}
+                                      "phantom-advanced" ["phantomjs"
+                                                          "src/test/js/runner.js"
+                                                          "src/test/html/advanced.html"]}}}
+
    :dev [:cljs-common
          :figwheel-dev
          {:dependencies [[org.clojure/math.combinatorics "0.1.3"]
@@ -81,7 +91,7 @@
           :metadata {:doc/format :markdown}}
   :javadoc-opts {:package-names "clara.rules"}
   :source-paths ["src/main/clojure"]
-  :resource-paths []
+  :resource-paths ^:replace []
   :test-paths ["src/test/clojure" "src/test/common"]
   :java-source-paths ["src/main/java"]
   :clean-targets ^{:protect false} ["resources/public/js" "target"]

@@ -1,7 +1,7 @@
 language: clojure
 lein: 2.7.1
 script:
-  - lein do test-all
+  - lein test-all
   - lein test :generative
   - lein test-all-clj7
   - lein test-all-clj10
