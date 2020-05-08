@@ -16,8 +16,9 @@
             "build-dev-assets" ["do"
                                 ["shell" "npm" "install"]]
             "fig" ["trampoline" "run" "-m" "figwheel.main"]
+            "fig-build" ["do"
+                         ["with-profiles" "dev-cmd-line" ["fig" "-b" "dev"]]]
             "fig-repl" ["do"
-                        ["build-dev-assets"]
                         ["with-profiles" "dev-cmd-line" ["fig" "-b" "dev" "-r"]]]}
   :source-paths ["src/main/clojure"]
   :test-paths ["src/test/clojure" "src/test/cljsenv"]

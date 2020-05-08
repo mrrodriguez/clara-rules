@@ -347,8 +347,32 @@
        `(com/mk-session (concat [(ns-name *ns*)] ~(vec args)))))) ; No namespace given, so use the current one.
 
 #?(:clj
-  (defmacro defsession
-    "Creates a sesson given a list of sources and keyword-style options, which are typically Clojure namespaces.
+   (defn cljs-mk-session [sources-and-options]
+     (let [cur-ns-name (ns-name *ns*)]
+       (letfn [(try-resolve [n s]
+                 (try
+                   (if n
+                     (resolve n s)
+                     (resolve s))
+                   (catch Exception _
+                     nil)))
+               (resolve-sym [src]
+                 (or (try-resolve nil src)
+                     (try-resolve cur-ns-name src)
+                     src))
+               (resolve-source [src]
+                 (cond
+                   (coll? src) (into (empty src) (map resolve-source) src)
+                   (symbol? src) (resolve-sym src)
+                   :else src))]
+         (let [sources-and-options (into []
+                                         (map resolve-source)
+                                         sources-and-options)]
+           (com/mk-session sources-and-options))))))
+
+#?(:clj
+   (defmacro defsession
+     "Creates a sesson given a list of sources and keyword-style options, which are typically Clojure namespaces.
 
     Typical usage would be like this, with a session defined as a var:
 
@@ -362,10 +386,14 @@
     (-> my-session
      (insert (->Temperature 23))
      (fire-rules))"
-    [name & sources-and-options]
-    (if (com/compiling-cljs?)
-      `(clara.macros/defsession ~name ~@sources-and-options)
-      `(def ~name (com/mk-session ~(vec sources-and-options))))))
+     [name & sources-and-options]
+     (if (com/compiling-cljs?)
+       (let [s (-> sources-and-options
+                   vec
+                   cljs-mk-session)]
+         `(def ~name ~s))
+       ;;`(clara.macros/defsession ~name ~@sources-and-options)
+       `(def ~name (com/mk-session ~(vec sources-and-options))))))
 
 #?(:clj
   (defmacro defrule
