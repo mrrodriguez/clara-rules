@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "runner": "node dev-resources/js/test_environment.js dev-resources/public/js/compiled/app.js http://localhost:9500"
+  },
+  "dependencies": {
+    "jsdom": "16.2.2"
+  }
+}

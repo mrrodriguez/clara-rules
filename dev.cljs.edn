@@ -1,0 +1,11 @@
+^{:open-url false
+  :watch-dirs       ["src/main/clojure" "src/test/clojure" "src/test/cljsenv"]
+  :css-dirs         ["resources"]
+  :extra-main-files {:testing {:main clara.test-runner}}}
+{:main clara.app
+ :output-to "dev-resources/public/js/compiled/app.js"
+ :output-dir "dev-resources/public/js/compiled/dev"
+ :asset-path "js/compiled/dev"
+ :infer-externs true
+ :npm-deps false
+ :optimizations :none}

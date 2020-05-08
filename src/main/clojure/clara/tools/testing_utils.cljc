@@ -1,20 +1,15 @@
-#?(:clj
-   (ns clara.tools.testing-utils
-     "Internal utilities for testing clara-rules and derivative projects.  These should be considered experimental
+(ns clara.tools.testing-utils
+  "Internal utilities for testing clara-rules and derivative projects.  These should be considered experimental
   right now from the perspective of consumers of clara-rules, although it is possible that this namespace 
   will be made part of the public API once its functionality has proven robust and reliable.  The focus, however,
   is functionality needed to test the rules engine itself."
-     (:require [clara.rules.update-cache.core :as uc]
-               [clara.rules.update-cache.cancelling :as ca]
-               [clara.rules.compiler :as com]
-               [clara.macros :as m]
-               [clara.rules.dsl :as dsl]
-               [clojure.test :refer [is]]))
-   :cljs
-   (ns clara.tools.testing-utils
-     (:require [clara.rules.update-cache.core :as uc])
-     (:require-macros [clara.tools.testing-utils]
-       [cljs.test :refer [is]])))
+  (:require [clara.rules.update-cache.core :as uc]
+            #?(:clj [clara.rules.update-cache.cancelling :as ca])
+            #?(:clj [clara.rules.compiler :as com])
+            #?(:clj [clara.macros :as m])
+            #?(:clj [clara.rules.dsl :as dsl])
+            [clojure.test :as t])
+  #?(:cljs (:require-macros [clara.tools.testing-utils])))
 
 #?(:clj
    (defmacro def-rules-test
@@ -148,8 +143,8 @@
       (println "==========================================")
       (println (str "Mean: " mean "ms"))
       (println (str "Standard Deviation: " std "ms" \newline)))
-    (is (mean-assertion mean)
-        (str "Actual mean value: " mean))
+    (t/is (mean-assertion mean)
+          (str "Actual mean value: " mean))
     {:mean mean
      :std std}))
 
@@ -193,13 +188,13 @@
    (defmacro assert-ex-data [expected-ex-data form]
      `(try
         ~form
-        (is false
-            (str "Exception expected to be thrown when evaluating: " \newline
-                 '~form))
+        (t/is false
+              (str "Exception expected to be thrown when evaluating: " \newline
+                   '~form))
         (catch Exception e#
           (let [res# (ex-data-search e# ~expected-ex-data)]
-            (is (= :success res#)
-                (str "Exception msg found: " \newline
-                     e# \newline
-                     "Non matches found: " \newline
-                     res#)))))))
+            (t/is (= :success res#)
+                  (str "Exception msg found: " \newline
+                       e# \newline
+                       "Non matches found: " \newline
+                       res#)))))))

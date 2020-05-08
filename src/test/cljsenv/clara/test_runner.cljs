@@ -1,0 +1,29 @@
+(ns clara.test-runner
+  (:require [cljs-test-display.core :as c]
+            [figwheel.main.testing :as f]
+            ;; Tests ns's
+            [clara.test-rules]
+            [clara.test-rules-require]
+            [cljs.test]
+            [clara.test-salience]
+            [clara.test-complex-negation]
+            [clara.test-common]
+            [clara.test-testing-utils]
+            [clara.test-accumulators]
+            [clara.test-exists]
+            [clara.tools.test-tracing]
+            [clara.tools.test-fact-graph]
+            [clara.tools.test-inspect]
+            [clara.test-truth-maintenance]
+            [clara.test-dsl]
+            [clara.test-accumulation]
+            [clara.test-memory]
+            [clara.test-simple-rules]
+            [clara.test-rhs-retract]
+            [clara.test-bindings]
+            [clara.test-clear-ns-productions]
+            [clara.test-negation]
+            [clara.performance.test-rule-execution]
+            [clara.test-node-sharing]))
+
+(f/run-tests (c/init! "app-testing"))

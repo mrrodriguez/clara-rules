@@ -1,0 +1,8 @@
+^{:launch-js clara.cljs-test-runner/run-js-test-environment}
+{:main clara.test-runner-headless
+ :output-to "dev-resources/public/js/compiled/app.js"
+ :output-dir "dev-resources/public/js/compiled/dev"
+ :asset-path "js/compiled/dev"
+ :infer-externs true
+ :npm-deps false
+ :optimizations :simple}

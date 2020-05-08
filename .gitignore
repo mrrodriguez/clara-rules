@@ -2,7 +2,8 @@
 /lib
 /classes
 /checkouts
-/resources/public/js/*
+/resources/public/js/compiled/*
+/dev-resources/public/js/compiled/*
 pom.xml
 pom.xml.asc
 *.jar
@@ -15,3 +16,4 @@ figwheel_server.log
 *.*~
 .idea/*
 *.iml
+node_modules
