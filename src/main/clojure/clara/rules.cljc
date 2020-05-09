@@ -232,40 +232,40 @@
 
 
 #?(:cljs
-  (defn assemble-session
-  "This is used by tools to create a session; most users won't use this function."
-  [beta-roots alpha-fns productions options]
-  (let [rulebase (mk-rulebase beta-roots alpha-fns productions)
-        transport (eng/LocalTransport.)
+   (defn assemble-session
+     "This is used by tools to create a session; most users won't use this function."
+     [beta-roots alpha-fns productions options]
+     (let [rulebase (mk-rulebase beta-roots alpha-fns productions)
+           transport (eng/->LocalTransport)
 
-        ;; The fact-type uses Clojure's type function unless overridden.
-        fact-type-fn (or (get options :fact-type-fn)
-                         type)
+           ;; The fact-type uses Clojure's type function unless overridden.
+           fact-type-fn (or (get options :fact-type-fn)
+                            type)
 
-        ;; The ancestors for a logical type uses Clojurescript's ancestors function unless overridden.
-        ancestors-fn (or (get options :ancestors-fn)
-                         ancestors)
+           ;; The ancestors for a logical type uses Clojurescript's ancestors function unless overridden.
+           ancestors-fn (or (get options :ancestors-fn)
+                            ancestors)
 
-        ;; Create a function that groups a sequence of facts by the collection
-        ;; of alpha nodes they target.
-        ;; We cache an alpha-map for facts of a given type to avoid computing
-        ;; them for every fact entered.
-        get-alphas-fn (create-get-alphas-fn fact-type-fn ancestors-fn rulebase)
+           ;; Create a function that groups a sequence of facts by the collection
+           ;; of alpha nodes they target.
+           ;; We cache an alpha-map for facts of a given type to avoid computing
+           ;; them for every fact entered.
+           get-alphas-fn (create-get-alphas-fn fact-type-fn ancestors-fn rulebase)
 
-        activation-group-sort-fn (eng/options->activation-group-sort-fn options)
+           activation-group-sort-fn (eng/options->activation-group-sort-fn options)
 
-        activation-group-fn (eng/options->activation-group-fn options)
+           activation-group-fn (eng/options->activation-group-fn options)
 
-        listener (if-let [listeners (:listeners options)]
-                   (l/delegating-listener listeners)
-                   l/default-listener)]
+           listener (if-let [listeners (:listeners options)]
+                      (l/delegating-listener listeners)
+                      l/default-listener)]
 
-    (eng/LocalSession. rulebase
-                       (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
-                       transport
-                       listener
-                       get-alphas-fn
-                       []))))
+       (eng/->LocalSession rulebase
+                           (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
+                           transport
+                           listener
+                           get-alphas-fn
+                           []))))
 
 #?(:clj
    (extend-type clojure.lang.Symbol
@@ -292,7 +292,7 @@
 
          ;; The symbol is not qualified, so treat it as a namespace.
          (->> (ns-interns sym)
-              (vals) ; Get the references in the namespace.
+              (vals)                    ; Get the references in the namespace.
               (filter var?)
               (filter (comp (some-fn :rule :query :production-seq) meta)) ; Filter down to rules, queries, and seqs of both.
               ;; If definitions are created dynamically (i.e. are not reflected in an actual code file)
@@ -345,30 +345,6 @@
      (if (and (seq args) (not (keyword? (first args))))
        `(com/mk-session ~(vec args)) ; At least one namespace given, so use it.
        `(com/mk-session (concat [(ns-name *ns*)] ~(vec args)))))) ; No namespace given, so use the current one.
-
-#?(:clj
-   (defn cljs-mk-session [sources-and-options]
-     (let [cur-ns-name (ns-name *ns*)]
-       (letfn [(try-resolve [n s]
-                 (try
-                   (if n
-                     (resolve n s)
-                     (resolve s))
-                   (catch Exception _
-                     nil)))
-               (resolve-sym [src]
-                 (or (try-resolve nil src)
-                     (try-resolve cur-ns-name src)
-                     src))
-               (resolve-source [src]
-                 (cond
-                   (coll? src) (into (empty src) (map resolve-source) src)
-                   (symbol? src) (resolve-sym src)
-                   :else src))]
-         (let [sources-and-options (into []
-                                         (map resolve-source)
-                                         sources-and-options)]
-           (com/mk-session sources-and-options))))))
 
 #?(:clj
    (defmacro defsession
