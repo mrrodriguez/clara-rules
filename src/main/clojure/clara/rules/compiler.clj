@@ -20,7 +20,6 @@
             TestNode
             AccumulateNode
             AccumulateWithJoinFilterNode
-            LocalTransport
             Accumulator
             ISystemFact]
            [java.beans
@@ -2016,7 +2015,7 @@
 
         get-alphas-fn (:get-alphas-fn rulebase)
 
-        transport (LocalTransport.)]
+        transport (eng/->LocalTransport)]
 
     (eng/assemble {:rulebase rulebase
                    :memory (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
