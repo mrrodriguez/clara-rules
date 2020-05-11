@@ -268,41 +268,53 @@
                            []))))
 
 #?(:clj
-   (extend-type clojure.lang.Symbol
-     com/IRuleSource
+   (defn resolve-symbol-rule-source [sym]
+     ;; Find the rules and queries in the namespace, shred them,
+     ;; and compile them into a rule base.
+     (if (namespace sym)
+       ;; The symbol is qualified, so load rules in the qualified symbol.
+       (let [resolved (resolve sym)]
+         (when (nil? resolved)
+           (throw (ex-info (str "Unable to resolve rule source: " sym) {:sym sym})))
+
+         (cond
+           ;; The symbol references a rule or query, so just return it
+           (or (:query (meta resolved))
+               (:rule (meta resolved))) [@resolved]
+
+           ;; The symbol references a sequence, so return it.
+           (sequential? @resolved) @resolved
+
+           :default
+           (throw (ex-info (str "The source referenced by " sym " is not valid.") {:sym sym} ))))
+
+       ;; The symbol is not qualified, so treat it as a namespace.
+       (->> (ns-interns sym)
+            (vals)                      ; Get the references in the namespace.
+            (filter var?)
+            (filter (comp (some-fn :rule :query :production-seq) meta)) ; Filter down to rules, queries, and seqs of both.
+            ;; If definitions are created dynamically (i.e. are not reflected in an actual code file)
+            ;; it is possible that they won't have :line metadata, so we have a default of 0.
+            (sort (fn [v1 v2]
+                    (compare (or (:line (meta v1)) 0)
+                             (or (:line (meta v2)) 0))))
+            (mapcat #(if (:production-seq (meta %))
+                       (deref %)
+                       [(deref %)]))))))
+
+#?(:clj
+   (extend-protocol com/IRuleSource
+     clojure.lang.Symbol
      (load-rules [sym]
-       ;; Find the rules and queries in the namespace, shred them,
-       ;; and compile them into a rule base.
-       (if (namespace sym)
-         ;; The symbol is qualified, so load rules in the qualified symbol.
-         (let [resolved (resolve sym)]
-           (when (nil? resolved)
-             (throw (ex-info (str "Unable to resolve rule source: " sym) {:sym sym})))
-
-           (cond
-             ;; The symbol references a rule or query, so just return it
-             (or (:query (meta resolved))
-                 (:rule (meta resolved))) [@resolved]
-
-             ;; The symbol refernces a sequence, so return it.
-             (sequential? @resolved) @resolved
-
-             :default
-             (throw (ex-info (str "The source referenced by " sym " is not valid.") {:sym sym} ))))
-
-         ;; The symbol is not qualified, so treat it as a namespace.
-         (->> (ns-interns sym)
-              (vals)                    ; Get the references in the namespace.
-              (filter var?)
-              (filter (comp (some-fn :rule :query :production-seq) meta)) ; Filter down to rules, queries, and seqs of both.
-              ;; If definitions are created dynamically (i.e. are not reflected in an actual code file)
-              ;; it is possible that they won't have :line metadata, so we have a default of 0.
-              (sort (fn [v1 v2]
-                      (compare (or (:line (meta v1)) 0)
-                               (or (:line (meta v2)) 0))))
-              (mapcat #(if (:production-seq (meta %))
-                         (deref %)
-                         [(deref %)])))))))
+       (resolve-symbol-rule-source sym))
+     java.lang.Object
+     (load-rules [o]
+       (if (and (not (map? o))
+                (coll? o))
+         (into (empty o)
+               (mapcat com/load-rules)
+               o)
+         o))))
 
 #?(:clj
   (defmacro mk-session
@@ -363,13 +375,7 @@
      (insert (->Temperature 23))
      (fire-rules))"
      [name & sources-and-options]
-     (if (com/compiling-cljs?)
-       (let [s (-> sources-and-options
-                   vec
-                   cljs-mk-session)]
-         `(def ~name ~s))
-       ;;`(clara.macros/defsession ~name ~@sources-and-options)
-       `(def ~name (com/mk-session ~(vec sources-and-options))))))
+     `(def ~name ~(com/mk-session (vec sources-and-options)))))
 
 #?(:clj
   (defmacro defrule
@@ -387,11 +393,11 @@
 
 See the [rule authoring documentation](http://www.clara-rules.org/docs/rules/) for details."
     [name & body]
-    (if (com/compiling-cljs?)
-      `(clara.macros/defrule ~name ~@body)
-      (let [doc (if (string? (first body)) (first body) nil)]
-        `(def ~(vary-meta name assoc :rule true :doc doc)
-           ~(dsl/build-rule name body (meta &form)))))))
+    ;;if (com/compiling-cljs?)
+    ;;`(clara.macros/defrule ~name ~@body)
+    (let [doc (if (string? (first body)) (first body) nil)]
+      `(def ~(vary-meta name assoc :rule true :doc doc)
+         ~(dsl/build-rule name body (meta &form))))))
 
 #?(:clj
   (defmacro defquery
@@ -405,13 +411,13 @@ parameters would look like this:
 
 See the [query authoring documentation](http://www.clara-rules.org/docs/queries/) for details."
     [name & body]
-    (if (com/compiling-cljs?)
-      `(clara.macros/defquery ~name ~@body)
-      (let [doc (if (string? (first body)) (first body) nil)
-            binding (if doc (second body) (first body))
-            definition (if doc (drop 2 body) (rest body) )]
-        `(def ~(vary-meta name assoc :query true :doc doc)
-           ~(dsl/build-query name body (meta &form)))))))
+    ;;if (com/compiling-cljs?)
+    ;;`(clara.macros/defquery ~name ~@body)
+    (let [doc (if (string? (first body)) (first body) nil)
+          binding (if doc (second body) (first body))
+          definition (if doc (drop 2 body) (rest body) )]
+      `(def ~(vary-meta name assoc :query true :doc doc)
+         ~(dsl/build-query name body (meta &form))))))
 
 #?(:clj
    (defmacro clear-ns-productions!
@@ -421,12 +427,12 @@ See the [query authoring documentation](http://www.clara-rules.org/docs/queries/
       reload via the REPL or mechanism such as figwheel. Place (clear-ns-productions!) at the top of any namespace
       defining rules/queries to ensure the cache is cleared properly."
      []
-     (if (com/compiling-cljs?)
-       `(clara.macros/clear-ns-productions!)
-       (let [production-syms (->> (ns-interns *ns*)
-                                  (filter (comp var? second))
-                                  (filter (comp (some-fn :rule :query :production-seq) meta second)) ; Filter down to rules, queries, and seqs of both.
-                                  (map first)               ; Take the symbols for the rule/query vars
-                                  )]
-         (doseq [psym production-syms]
-           (ns-unmap *ns* psym))))))
+     ;;if (com/compiling-cljs?)
+     ;;`(clara.macros/clear-ns-productions!)
+     (let [production-syms (->> (ns-interns *ns*)
+                                (filter (comp var? second))
+                                (filter (comp (some-fn :rule :query :production-seq) meta second)) ; Filter down to rules, queries, and seqs of both.
+                                (map first)               ; Take the symbols for the rule/query vars
+                                )]
+       (doseq [psym production-syms]
+         (ns-unmap *ns* psym)))))

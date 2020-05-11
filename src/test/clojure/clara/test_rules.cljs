@@ -92,8 +92,8 @@
   []
   [?n <- Number])
 
-(defsession my-session 'clara.test-rules)
-(defsession my-session-map 'clara.test-rules :fact-type-fn :type)
+(defsession my-session clara.test-rules)
+(defsession my-session-map clara.test-rules :fact-type-fn :type)
 (defsession my-session-data (clara.rules.test-rules-data/weather-rules))
 
 (deftest test-number-query

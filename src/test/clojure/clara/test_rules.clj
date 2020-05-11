@@ -898,7 +898,7 @@
            (set (query session "cold-query" :?l "ORD"))))))
 
 
-(defsession my-session 'clara.sample-ruleset)
+(defsession my-session clara.sample-ruleset)
 
 (deftest test-defsession
 

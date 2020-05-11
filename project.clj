@@ -17,7 +17,7 @@
                                 ["shell" "npm" "install"]]
             "fig" ["trampoline" "run" "-m" "figwheel.main"]
             "fig-build" ["do"
-                         ["with-profiles" "dev-cmd-line" ["fig" "-b" "dev"]]]
+                         ["with-profiles" "dev-cmd-line" ["fig" "-bo" "dev"]]]
             "fig-repl" ["do"
                         ["with-profiles" "dev-cmd-line" ["fig" "-b" "dev" "-r"]]]}
   :source-paths ["src/main/clojure"]

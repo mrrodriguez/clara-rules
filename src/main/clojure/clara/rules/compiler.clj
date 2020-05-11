@@ -4,6 +4,7 @@
    Most users should use only the clara.rules namespace."
   (:require [clara.rules.engine :as eng]
             [clara.rules.schema :as schema]
+            [clara.rules.platform :as platform]
             [clojure.set :as set]
             [clojure.string :as string]
             [clojure.walk :as walk]
@@ -224,19 +225,21 @@
    ex-info exception is thrown with more details added.  Uses *compile-ctx*
    for additional contextual info to add to the exception details."
   [expr]
-  (try
-    (eval expr)
-    (catch Exception e
-      (let [edata (merge {:expr expr}
-                         (dissoc *compile-ctx* :msg))
-            msg (:msg *compile-ctx*)]
-        (throw (ex-info (str (if msg (str "Failed " msg) "Failed compiling.") \newline
-                             ;; Put ex-data specifically in the string since
-                             ;; often only ExceptionInfo.toString() will be
-                             ;; called, which doesn't show this data.
-                             edata \newline)
-                        edata
-                        e))))))
+  (if true ;;(compiling-cljs?)
+    expr
+    (try
+      (eval expr)
+      (catch Exception e
+        (let [edata (merge {:expr expr}
+                           (dissoc *compile-ctx* :msg))
+              msg (:msg *compile-ctx*)]
+          (throw (ex-info (str (if msg (str "Failed " msg) "Failed compiling.") \newline
+                               ;; Put ex-data specifically in the string since
+                               ;; often only ExceptionInfo.toString() will be
+                               ;; called, which doesn't show this data.
+                               edata \newline)
+                          edata
+                          e)))))))
 
 (defn- compile-constraints
   "Compiles a sequence of constraints into a structure that can be evaluated.
@@ -1434,7 +1437,10 @@
                             ;; try them one by one with their compilation context, this is slow but we were going to fail
                             ;; anyway.
                             (try
-                              (mapv vector (eval exprs) compilation-ctxs)
+                              (let [evaled (if true;; (compiling-cljs?)
+                                             exprs
+                                             (eval exprs))]
+                                (mapv vector evaled compilation-ctxs))
                               (catch Exception e
                                 ;; Using mapv here rather than map to avoid laziness, otherwise compilation failure might
                                 ;; fall into the throw below for the wrong reason.
@@ -1716,117 +1722,12 @@
              :children beta-children}
             env (assoc :env env))))
 
-;; Wrap the fact-type so that Clojure equality and hashcode semantics are used
-;; even though this is placed in a Java map.
-(deftype AlphaRootsWrapper [fact-type ^int fact-type-hash roots]
-  Object
-  (equals [this other]
-    (let [other ^AlphaRootsWrapper other]
-      (cond
-
-        (identical? fact-type (.fact-type other))
-        true
-
-        (not (== fact-type-hash (.fact-type-hash other)))
-        false
-
-        :else
-        (= fact-type (.fact-type other)))))
-
-  ;; Since know we will need to find the hashcode of this object in all cases just eagerly calculate it upfront
-  ;; and avoid extra calls to hash later.
-  (hashCode [this] fact-type-hash))
-
-(defn- create-get-alphas-fn
-  "Returns a function that given a sequence of facts,
-  returns a map associating alpha nodes with the facts they accept."
-  [fact-type-fn ancestors-fn alpha-roots]
-
-  (let [;; If a customized fact-type-fn is provided,
-        ;; we must use a specialized grouping function
-        ;; that handles internal control types that may not
-        ;; follow the provided type function.
-        wrapped-fact-type-fn (if (= fact-type-fn type)
-                               type
-                               (fn [fact]
-                                 (if (instance? ISystemFact fact)
-                                   ;; Internal system types always use Clojure's type mechanism.
-                                   (type fact)
-                                   ;; All other types defer to the provided function.
-                                   (fact-type-fn fact))))
-
-        ;; Wrap the ancestors-fn so that we don't send internal facts such as NegationResult
-        ;; to user-provided productions.  Note that this work is memoized inside fact-type->roots.
-        wrapped-ancestors-fn (fn [fact-type]
-                               (if (isa? fact-type ISystemFact)
-                                 ;; Exclude system types from having ancestors for now
-                                 ;; since none of our use-cases require them.  If this changes
-                                 ;; we may need to define a custom hierarchy for them.
-                                 #{}
-                                 (ancestors-fn fact-type)))
-
-        fact-type->roots (memoize
-                          (fn [fact-type]
-                            ;; There is no inherent ordering here but we put the AlphaRootsWrapper instances
-                            ;; in a vector rather than a set to avoid nondeterministic ordering (and thus nondeterministic
-                            ;; performance).
-                            (into []
-                                  ;; If a given type in the ancestors has no matching alpha roots,
-                                  ;; don't return it as an ancestor.  Fact-type->roots is memoized on the fact type,
-                                  ;; but work is performed per group returned on each call the to get-alphas-fn.  Therefore
-                                  ;; removing groups with no alpha nodes here will improve performance on subsequent calls
-                                  ;; to the get-alphas-fn with the same fact type.
-                                  (keep #(when-let [roots (not-empty (get alpha-roots %))]
-                                           (AlphaRootsWrapper. % (hash %) roots)))
-                                  ;; If a user-provided ancestors-fn returns a sorted collection, for example for
-                                  ;; ensuring determinism, we respect that ordering here by conj'ing on to the existing
-                                  ;; collection.
-                                  (conj (wrapped-ancestors-fn fact-type) fact-type))))
-
-        update-roots->facts! (fn [^java.util.Map roots->facts roots-group fact]
-                               (if-let [v (.get roots->facts roots-group)]
-                                 (.add ^java.util.List v fact)
-                                 (.put roots->facts roots-group (doto (java.util.LinkedList.)
-                                                                  (.add fact)))))]
-
-    (fn [facts]
-      (let [roots->facts (java.util.LinkedHashMap.)]
-
-        (doseq [fact facts
-                roots-group (fact-type->roots (wrapped-fact-type-fn fact))]
-          (update-roots->facts! roots->facts roots-group fact))
-
-        (let [return-list (java.util.LinkedList.)
-              entries (.entrySet roots->facts)
-              entries-it (.iterator entries)]
-          ;; We iterate over the LinkedHashMap manually to avoid potential issues described at http://dev.clojure.org/jira/browse/CLJ-1738
-          ;; where a Java iterator can return the same entry object repeatedly and mutate it after each next() call.  We use mutable lists
-          ;; for performance but wrap them in unmodifiableList to make it clear that the caller is not expected to mutate these lists.
-          ;; Since after this function returns the only reference to the fact lists will be through the unmodifiedList we can depend elsewhere
-          ;; on these lists not changing.  Since the only expected workflow with these lists is to loop through them, not add or remove elements,
-          ;; we don't gain much from using a transient (which can be efficiently converted to a persistent data structure) rather than a mutable type.
-          (loop []
-            (when (.hasNext entries-it)
-              (let [^java.util.Map$Entry e (.next entries-it)]
-                (.add return-list [(-> e ^AlphaRootsWrapper (.getKey) .roots)
-                                   (java.util.Collections/unmodifiableList (.getValue e))])
-                (recur))))
-
-          (java.util.Collections/unmodifiableList return-list))))))
-
-
 (sc/defn build-network
   "Constructs the network from compiled beta tree and condition functions."
   [id-to-node :- {sc/Int sc/Any}
    beta-roots
    alpha-fns
-   productions
-   fact-type-fn
-   ancestors-fn
-   activation-group-sort-fn
-   activation-group-fn
-   expr-fn-lookup]
-
+   productions]
   (let [beta-nodes (vals id-to-node)
 
         production-nodes (for [node beta-nodes
@@ -1859,21 +1760,13 @@
         ;; Merge the alpha nodes into the id-to-node map
         id-to-node (into id-to-node
                          (map (juxt :id identity))
-                         (mapv second alpha-nodes))
-
-        get-alphas-fn (create-get-alphas-fn fact-type-fn ancestors-fn alpha-map)]
-
-    (strict-map->Rulebase
-     {:alpha-roots alpha-map
-      :beta-roots beta-roots
-      :productions productions
-      :production-nodes production-nodes
-      :query-nodes query-map
-      :id-to-node id-to-node
-      :activation-group-sort-fn activation-group-sort-fn
-      :activation-group-fn activation-group-fn
-      :get-alphas-fn get-alphas-fn
-      :node-expr-fn-lookup expr-fn-lookup})))
+                         (mapv second alpha-nodes))]
+    {:alpha-roots alpha-map
+     :beta-roots beta-roots
+     :productions productions
+     :production-nodes production-nodes
+     :query-nodes query-map
+     :id-to-node id-to-node}))
 
 ;; Cache of sessions for fast reloading.
 (def ^:private session-cache (atom {}))
@@ -1984,8 +1877,8 @@
         exprs (if omit-compile-ctx
                 (into {}
                       (map
-                        (fn [[k [expr ctx]]]
-                          [k [expr (dissoc ctx :compile-ctx)]]))
+                       (fn [[k [expr ctx]]]
+                         [k [expr (dissoc ctx :compile-ctx)]]))
                       exprs)
                 exprs)
 
@@ -1993,35 +1886,73 @@
         beta-root-ids (-> beta-graph :forward-edges (get 0)) ; 0 is the id of the virtual root node.
         beta-roots (vals (select-keys beta-tree beta-root-ids))
         alpha-nodes (compile-alpha-nodes alpha-graph exprs)
+        network (build-network beta-tree beta-roots alpha-nodes productions)]
+    (if-not true ;;(compiling-cljs?)
+      ;; ---------------
+      ;; CLJ
+      (let [ ;; The fact-type uses Clojure's type function unless overridden.
+            fact-type-fn (or (get options :fact-type-fn)
+                             type)
 
-        ;; The fact-type uses Clojure's type function unless overridden.
-        fact-type-fn (or (get options :fact-type-fn)
-                         type)
+            ;; The ancestors for a logical type uses Clojure's ancestors function unless overridden.
+            ancestors-fn (or (get options :ancestors-fn)
+                             ancestors)
 
-        ;; The ancestors for a logical type uses Clojure's ancestors function unless overridden.
-        ancestors-fn (or (get options :ancestors-fn)
-                         ancestors)
+            ;; The default is to sort activations in descending order by their salience.
+            activation-group-sort-fn (eng/options->activation-group-sort-fn options)
 
-        ;; The default is to sort activations in descending order by their salience.
-        activation-group-sort-fn (eng/options->activation-group-sort-fn options)
+            ;; The returned salience will be a tuple of the form [rule-salience internal-salience],
+            ;; where internal-salience is considered after the rule-salience and is assigned automatically by the compiler.
+            activation-group-fn (eng/options->activation-group-fn options)
 
-        ;; The returned salience will be a tuple of the form [rule-salience internal-salience],
-        ;; where internal-salience is considered after the rule-salience and is assigned automatically by the compiler.
-        activation-group-fn (eng/options->activation-group-fn options)
+            get-alphas-fn (eng/create-get-alphas-fn fact-type-fn ancestors-fn (:alpha-roots network))
+            rulebase (assoc network
+                            {:activation-group-sort-fn activation-group-sort-fn
+                             :activation-group-fn activation-group-fn
+                             :get-alphas-fn get-alphas-fn
+                             :node-expr-fn-lookup exprs}
+                            strict-map->Rulebase)
+            transport (eng/->LocalTransport)]
+        (eng/assemble {:rulebase rulebase
+                       :memory (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
+                       :transport (eng/->LocalTransport)
+                       :listeners (get options :listeners  [])
+                       :get-alphas-fn get-alphas-fn}))
+      ;; ---------------
+      ;; CLJS
+      ;; NB: This must return a form since it all has to happen during CLJ-side compile time. This
+      ;; is expected to be called at CLJS-compile-time, eg. from a macro expansion.
+      `(let [options# ~options
+             ;; The fact-type uses Clojure's type function unless overridden.
+             fact-type-fn# (or (get options# :fact-type-fn)
+                               type)
 
-        rulebase (build-network beta-tree beta-roots alpha-nodes productions
-                                fact-type-fn ancestors-fn activation-group-sort-fn activation-group-fn
-                                exprs)
+             ;; The ancestors for a logical type uses Clojure's ancestors function unless overridden.
+             ancestors-fn# (or (get options# :ancestors-fn)
+                               ancestors)
 
-        get-alphas-fn (:get-alphas-fn rulebase)
+             ;; The default is to sort activations in descending order by their salience.
+             activation-group-sort-fn# (eng/options->activation-group-sort-fn options#)
 
-        transport (eng/->LocalTransport)]
+             ;; The returned salience will be a tuple of the form [rule-salience internal-salience],
+             ;; where internal-salience is considered after the rule-salience and is assigned automatically by the compiler.
+             activation-group-fn# (eng/options->activation-group-fn options#)
 
-    (eng/assemble {:rulebase rulebase
-                   :memory (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
-                   :transport transport
-                   :listeners (get options :listeners  [])
-                   :get-alphas-fn get-alphas-fn})))
+             network# '~network
+             exprs# '~exprs
+             get-alphas-fn# (eng/create-get-alphas-fn fact-type-fn# ancestors-fn# (:alpha-roots network#))
+             rulebase# (assoc network#
+                              {:activation-group-sort-fn activation-group-sort-fn#
+                               :activation-group-fn activation-group-fn#
+                               :get-alphas-fn get-alphas-fn#
+                               :node-expr-fn-lookup exprs#}
+                              strict-map->Rulebase)
+             transport# (eng/->LocalTransport)]
+         (eng/assemble {:rulebase rulebase#
+                        :memory (eng/local-memory rulebase# transport# activation-group-sort-fn# activation-group-fn# get-alphas-fn#)
+                        :transport transport#
+                        :listeners (get options# :listeners  [])
+                        :get-alphas-fn get-alphas-fn#})))))
 
 (defn add-production-load-order
   "Adds ::rule-load-order to metadata of productions. Custom DSL's may need to use this if
@@ -2060,7 +1991,9 @@
        (let [session (mk-session* productions options)]
 
          ;; Cache the session unless instructed not to.
-         (when (get options :cache true)
+         ;; NB: There is no caching for cljs currently.
+         (when (and (not (compiling-cljs?))
+                    (get options :cache true))
            (swap! session-cache assoc [productions options] session))
 
          ;; Return the session.

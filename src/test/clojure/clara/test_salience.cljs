@@ -84,7 +84,7 @@
       ;; has been proposed in #292. Internally, this would facilitate session generation for CLJS
       ;; tests such as this one, and may be useful if exposed publicly.
 
-      (defsession test-salience-session 'clara.test-salience
+      (defsession test-salience-session clara.test-salience
                      :cache false
                      :activation-group-sort-fn (condp = sort-fn
                                                  :default-sort nil

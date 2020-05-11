@@ -54,7 +54,7 @@
     (throw (ex-info "A type that is not :windspeed, :temperature, or :cold was provided"
                     {:type type}))))
 
-(defsession test-session 'clara.test-complex-negation
+(defsession test-session clara.test-complex-negation
   :fact-type-fn type->keyword
   :ancestors-fn keyword->ancestors)
 

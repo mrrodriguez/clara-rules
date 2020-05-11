@@ -13,7 +13,7 @@
 
 (use-fixtures :each tu/side-effect-holder-fixture)
 
-(defsession my-session 'clara.rule-defs)
+(defsession my-session clara.rule-defs)
 
 (deftest test-simple-defrule
   (let [session (insert my-session (facts/->Temperature 10 "MCI"))]

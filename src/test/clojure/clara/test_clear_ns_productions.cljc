@@ -40,7 +40,7 @@
                 :constraints []}]
        :rhs  '(clara.rules/insert! :before-clearing-seq)}]))
 
-(defsession uncleared-session 'clara.test-clear-ns-productions :fact-type-fn identity)
+(defsession uncleared-session clara.test-clear-ns-productions :fact-type-fn identity)
 
 (clear-ns-productions!)
 
@@ -61,7 +61,7 @@
                 :constraints []}]
        :rhs  '(clara.rules/insert! :after-clearing-seq)}]))
 
-(defsession cleared-session 'clara.test-clear-ns-productions :fact-type-fn identity)
+(defsession cleared-session clara.test-clear-ns-productions :fact-type-fn identity)
 
 ;;; Then tests validating what productions the respective sessions have.
 (deftest cleared?

@@ -1,6 +1,7 @@
 ^{:open-url false
   :watch-dirs       ["src/main/clojure" "src/test/clojure" "src/test/cljsenv"]
   :css-dirs         ["resources"]
+  :ring-server-options {:port 9560}
   :extra-main-files {:testing {:main clara.test-runner}}}
 {:main clara.app
  :output-to "dev-resources/public/js/compiled/app.js"
