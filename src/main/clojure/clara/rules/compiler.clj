@@ -1886,7 +1886,10 @@
         beta-root-ids (-> beta-graph :forward-edges (get 0)) ; 0 is the id of the virtual root node.
         beta-roots (vals (select-keys beta-tree beta-root-ids))
         alpha-nodes (compile-alpha-nodes alpha-graph exprs)
-        network (build-network beta-tree beta-roots alpha-nodes productions)]
+        network (cond-> (build-network beta-tree beta-roots alpha-nodes productions)
+                  true ;;(compiling-cljs?)
+                  (select-keys #{:alpha-roots :query-nodes})
+                  )]
     (if-not true ;;(compiling-cljs?)
       ;; ---------------
       ;; CLJ
@@ -1914,9 +1917,13 @@
                             strict-map->Rulebase)
             transport (eng/->LocalTransport)]
         (eng/assemble {:rulebase rulebase
-                       :memory (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
+                       :memory (eng/local-memory rulebase
+                                                 transport
+                                                 activation-group-sort-fn
+                                                 activation-group-fn
+                                                 get-alphas-fn)
                        :transport (eng/->LocalTransport)
-                       :listeners (get options :listeners  [])
+                       :listeners (get options :listeners [])
                        :get-alphas-fn get-alphas-fn}))
       ;; ---------------
       ;; CLJS
@@ -1937,7 +1944,6 @@
              ;; The returned salience will be a tuple of the form [rule-salience internal-salience],
              ;; where internal-salience is considered after the rule-salience and is assigned automatically by the compiler.
              activation-group-fn# (eng/options->activation-group-fn options#)
-
              network# '~network
              exprs# '~exprs
              get-alphas-fn# (eng/create-get-alphas-fn fact-type-fn# ancestors-fn# (:alpha-roots network#))
@@ -1949,9 +1955,13 @@
                               strict-map->Rulebase)
              transport# (eng/->LocalTransport)]
          (eng/assemble {:rulebase rulebase#
-                        :memory (eng/local-memory rulebase# transport# activation-group-sort-fn# activation-group-fn# get-alphas-fn#)
+                        :memory (eng/local-memory rulebase#
+                                                  transport#
+                                                  activation-group-sort-fn#
+                                                  activation-group-fn#
+                                                  get-alphas-fn#)
                         :transport transport#
-                        :listeners (get options# :listeners  [])
+                        :listeners (get options# :listeners [])
                         :get-alphas-fn get-alphas-fn#})))))
 
 (defn add-production-load-order

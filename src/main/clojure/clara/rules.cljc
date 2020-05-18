@@ -375,7 +375,8 @@
      (insert (->Temperature 23))
      (fire-rules))"
      [name & sources-and-options]
-     `(def ~name ~(com/mk-session (vec sources-and-options)))))
+     (let [s (com/mk-session (vec sources-and-options))]
+       `(def ~name ~s))))
 
 #?(:clj
   (defmacro defrule
