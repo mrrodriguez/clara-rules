@@ -84,32 +84,17 @@
   `defrecords`.  Work around by supplying our own which does."
   (clojure.reflect.JavaReflector. (clojure.lang.RT/makeClassLoader)))
 
-;; This technique borrowed from Prismatic's schema library.
-(defn compiling-cljs?
-  "Return true if we are currently generating cljs code.  Useful because cljx does not
-         provide a hook for conditional macro expansion."
-  []
-  (boolean
-   (when-let [n (find-ns 'cljs.analyzer)]
-     (when-let [v (ns-resolve n '*cljs-file*)]
-
-       ;; We perform this require only if we are compiling ClojureScript
-       ;; so non-ClojureScript users do not need to pull in
-       ;; that dependency.
-       (require 'clara.macros)
-       @v))))
-
 (defn get-namespace-info
   "Get metadata about the given namespace."
   [namespace]
-  (when-let [n (and (compiling-cljs?) (find-ns 'cljs.env))]
+  (when-let [n (and (platform/compiling-cljs?) (find-ns 'cljs.env))]
     (when-let [v (ns-resolve n '*compiler*)]
       (get-in @@v [ :cljs.analyzer/namespaces namespace]))))
 
 (defn cljs-ns
   "Returns the ClojureScript namespace being compiled during Clojurescript compilation."
   []
-  (if (compiling-cljs?)
+  (if (platform/compiling-cljs?)
     (-> 'cljs.analyzer (find-ns) (ns-resolve '*cljs-ns*) deref)
     nil))
 
@@ -181,7 +166,7 @@
            (symbol (str "." (.getName read-method)))])))
 
 (defn effective-type [type]
-  (if (compiling-cljs?)
+  (if (platform/compiling-cljs?)
     type
 
     (if (symbol? type)
@@ -191,7 +176,7 @@
 (defn get-fields
   "Returns a map of field name to a symbol representing the function used to access it."
   [type]
-  (if (compiling-cljs?)
+  (if (platform/compiling-cljs?)
 
     ;; Get ClojureScript fields.
     (if (symbol? type)
@@ -225,7 +210,7 @@
    ex-info exception is thrown with more details added.  Uses *compile-ctx*
    for additional contextual info to add to the exception details."
   [expr]
-  (if true ;;(compiling-cljs?)
+  (if (platform/compiling-cljs?)
     expr
     (try
       (eval expr)
@@ -1040,7 +1025,7 @@
                                                (list '= (-> b name symbol)
                                                      (list b 'ancestor-bindings)))
 
-          modified-expression `[:not {:type ~(if (compiling-cljs?)
+          modified-expression `[:not {:type ~(if (platform/compiling-cljs?)
                                                'clara.rules.engine/NegationResult
                                                'clara.rules.engine.NegationResult)
                                       :constraints [(~'= ~gen-rule-name ~'gen-rule-name)
@@ -1437,7 +1422,7 @@
                             ;; try them one by one with their compilation context, this is slow but we were going to fail
                             ;; anyway.
                             (try
-                              (let [evaled (if true;; (compiling-cljs?)
+                              (let [evaled (if (platform/compiling-cljs?)
                                              exprs
                                              (eval exprs))]
                                 (mapv vector evaled compilation-ctxs))
@@ -1887,10 +1872,8 @@
         beta-roots (vals (select-keys beta-tree beta-root-ids))
         alpha-nodes (compile-alpha-nodes alpha-graph exprs)
         network (cond-> (build-network beta-tree beta-roots alpha-nodes productions)
-                  true ;;(compiling-cljs?)
-                  (select-keys #{:alpha-roots :query-nodes})
-                  )]
-    (if-not true ;;(compiling-cljs?)
+                  (platform/compiling-cljs?) (select-keys #{:alpha-roots :query-nodes}))]
+    (if-not (platform/compiling-cljs?)
       ;; ---------------
       ;; CLJ
       (let [ ;; The fact-type uses Clojure's type function unless overridden.
@@ -2002,7 +1985,7 @@
 
          ;; Cache the session unless instructed not to.
          ;; NB: There is no caching for cljs currently.
-         (when (and (not (compiling-cljs?))
+         (when (and (not (platform/compiling-cljs?))
                     (get options :cache true))
            (swap! session-cache assoc [productions options] session))
 

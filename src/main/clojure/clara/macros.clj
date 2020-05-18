@@ -10,6 +10,7 @@
   (:require [clara.rules.engine :as eng]
             [clara.rules.memory :as mem]
             [clara.rules.compiler :as com]
+            [clara.rules.platform :as platform]
             [clara.rules.dsl :as dsl]
             [cljs.analyzer :as ana]
             [cljs.env :as env]
@@ -178,7 +179,7 @@
               (com/compile-action all-bindings
                                   ;; Using private function for now as a workaround.
                                   (if (:ns-name production)
-                                    (if (com/compiling-cljs?)
+                                    (if (platform/compiling-cljs?)
                                       (binding [cljs.analyzer/*cljs-ns* (:ns-name production)]
                                         (resolve-vars))
                                       (binding [*ns* (the-ns (:ns-name production))]

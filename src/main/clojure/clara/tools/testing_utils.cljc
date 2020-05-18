@@ -4,6 +4,7 @@
   will be made part of the public API once its functionality has proven robust and reliable.  The focus, however,
   is functionality needed to test the rules engine itself."
   (:require [clara.rules.update-cache.core :as uc]
+            [clara.rules.platform :as platform]
             #?(:clj [clara.rules.update-cache.cancelling :as ca])
             #?(:clj [clara.rules.compiler :as com])
             #?(:clj [clara.macros :as m])
@@ -54,14 +55,14 @@
                                                   (comp (map (fn [[session-name production-syms session-opts]]
                                                                [session-name (production-syms->productions production-syms) session-opts]))
                                                         (map (fn [[session-name productions session-opts]]
-                                                               [session-name (if (com/compiling-cljs?)
+                                                               [session-name (if (platform/compiling-cljs?)
                                                                                (m/productions->session-assembly-form (map eval productions) session-opts)
                                                                                `(com/mk-session ~(into [(vec productions)]
                                                                                                        cat
                                                                                                        session-opts)))]))
                                                         cat)))
 
-           test-form `(~(if (com/compiling-cljs?)
+           test-form `(~(if (platform/compiling-cljs?)
                           'cljs.test/deftest
                           'clojure.test/deftest)
                         ~name

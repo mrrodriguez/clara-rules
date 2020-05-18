@@ -2075,7 +2075,7 @@
   "Returns a function that given a sequence of facts,
   returns a map associating alpha nodes with the facts they accept."
   [fact-type-fn ancestors-fn alpha-roots]
-  (if-not true ;;(compiling-cljs?)
+  (if-not (platform/compiling-cljs?)
     ;; ---------------
     ;; CLJ
     (let [ ;; If a customized fact-type-fn is provided,

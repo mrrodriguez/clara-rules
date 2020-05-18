@@ -7,6 +7,7 @@
             [clojure.walk :as walk]
             [clara.rules.engine :as eng]
             [clara.rules.compiler :as com]
+            [clara.rules.platform :as platform]
             [clara.rules.schema :as schema]
             [schema.core :as sc])
   (:refer-clojure :exclude [qualified-keyword?]))
@@ -52,7 +53,7 @@
                                   ;; If we are compiling ClojureScript rules we don't want
                                   ;; to resolve the symbol in the ClojureScript compiler's
                                   ;; Clojure environment.  See issue 300.
-                                  (not (com/compiling-cljs?))
+                                  (not (platform/compiling-cljs?))
                                   (resolve (first condition)))]
 
                  ;; If the type resolves to a var, grab its contents for the match.
@@ -151,7 +152,7 @@
    if we can't qualify it for any reason."
   [env sym]
   (let [env (set env)]
-    (if (com/compiling-cljs?)
+    (if (platform/compiling-cljs?)
 
       ;; Qualify the symbol using the CLJS analyzer.
       (if-let [resolved (and (symbol? sym)
@@ -246,7 +247,7 @@
    (let [conditions (into [] (for [expr lhs]
                                (parse-expression expr rule-meta)))
 
-         rule {:ns-name (list 'quote (ns-name (if (com/compiling-cljs?) (com/cljs-ns) *ns*)))
+         rule {:ns-name (list 'quote (ns-name (if (platform/compiling-cljs?) (com/cljs-ns) *ns*)))
                :lhs     (list 'quote
                               (mapv #(resolve-vars % (destructure-syms %))
                                     conditions))
@@ -304,7 +305,7 @@
   [prod-name]
   (cond
     (qualified-keyword? prod-name) prod-name
-    (com/compiling-cljs?) (str (name (com/cljs-ns)) "/" (name prod-name))
+    (platform/compiling-cljs?) (str (name (com/cljs-ns)) "/" (name prod-name))
     :else (str (name (ns-name *ns*)) "/" (name prod-name))))
 
 (defn build-rule

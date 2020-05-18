@@ -10,7 +10,6 @@
    Any session or rulebase serialized in one version of Clara is not guaranteed to deserialize 
    successfully against another version of Clara."
   (:require [clara.rules.engine :as eng]
-            [clara.rules.compiler :as com]
             [clara.rules.memory :as mem]
             [clojure.set :as set]
             [schema.core :as s])
@@ -467,14 +466,12 @@
                 :activation-group-fn nil
                 :alphas-fn nil))))
 
-(def ^:private create-get-alphas-fn @#'com/create-get-alphas-fn)
-
 (defn opts->get-alphas-fn [rulebase opts]
   (let [fact-type-fn (:fact-type-fn opts type)
         ancestors-fn (:ancestors-fn opts ancestors)]
-    (create-get-alphas-fn fact-type-fn
-                          ancestors-fn
-                          (:alpha-roots rulebase))))
+    (eng/create-get-alphas-fn fact-type-fn
+                              ancestors-fn
+                              (:alpha-roots rulebase))))
 
 (defn assemble-restored-session
   "Builds a Clara session from the given rulebase and memory components.  When no memory is given a new 

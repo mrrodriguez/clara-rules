@@ -103,3 +103,13 @@
   "A for wrapped with a doall to force realisation. Usage is the same as regular for."
   [& body]
   `(doall (for ~@body)))
+
+;; This technique borrowed from Prismatic's schema library.
+(defn compiling-cljs?
+  "Return true if we are currently generating cljs code. Useful because cljc does not provide a hook
+  for conditional macro expansion."
+  []
+  (boolean
+   (when-let [n (find-ns 'cljs.analyzer)]
+     (when-let [v (ns-resolve n '*cljs-file*)]
+       @v))))

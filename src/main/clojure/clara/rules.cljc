@@ -394,7 +394,7 @@
 
 See the [rule authoring documentation](http://www.clara-rules.org/docs/rules/) for details."
     [name & body]
-    ;;if (com/compiling-cljs?)
+    ;;if (platform/compiling-cljs?)
     ;;`(clara.macros/defrule ~name ~@body)
     (let [doc (if (string? (first body)) (first body) nil)]
       `(def ~(vary-meta name assoc :rule true :doc doc)
@@ -412,7 +412,7 @@ parameters would look like this:
 
 See the [query authoring documentation](http://www.clara-rules.org/docs/queries/) for details."
     [name & body]
-    ;;if (com/compiling-cljs?)
+    ;;if (platform/compiling-cljs?)
     ;;`(clara.macros/defquery ~name ~@body)
     (let [doc (if (string? (first body)) (first body) nil)
           binding (if doc (second body) (first body))
@@ -428,7 +428,7 @@ See the [query authoring documentation](http://www.clara-rules.org/docs/queries/
       reload via the REPL or mechanism such as figwheel. Place (clear-ns-productions!) at the top of any namespace
       defining rules/queries to ensure the cache is cleared properly."
      []
-     ;;if (com/compiling-cljs?)
+     ;;if (platform/compiling-cljs?)
      ;;`(clara.macros/clear-ns-productions!)
      (let [production-syms (->> (ns-interns *ns*)
                                 (filter (comp var? second))
