@@ -13,7 +13,7 @@
             [clara.rules.memory :as mem]
             [clojure.set :as set]
             [schema.core :as s])
-  (:import [clara.rules.compiler
+  (:import [clara.rules.engine
             Rulebase]
            [clara.rules.memory
             RuleOrderedActivation]

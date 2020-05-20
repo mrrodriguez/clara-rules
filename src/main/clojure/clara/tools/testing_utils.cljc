@@ -7,7 +7,6 @@
             [clara.rules.platform :as platform]
             #?(:clj [clara.rules.update-cache.cancelling :as ca])
             #?(:clj [clara.rules.compiler :as com])
-            #?(:clj [clara.macros :as m])
             #?(:clj [clara.rules.dsl :as dsl])
             [clojure.test :as t])
   #?(:cljs (:require-macros [clara.tools.testing-utils])))
@@ -56,16 +55,15 @@
                                                                [session-name (production-syms->productions production-syms) session-opts]))
                                                         (map (fn [[session-name productions session-opts]]
                                                                [session-name (if (platform/compiling-cljs?)
-                                                                               (m/productions->session-assembly-form (map eval productions) session-opts)
+                                                                               (com/mk-session (into [(vec productions)]
+                                                                                                     cat
+                                                                                                     session-opts))
                                                                                `(com/mk-session ~(into [(vec productions)]
                                                                                                        cat
                                                                                                        session-opts)))]))
                                                         cat)))
 
-           test-form `(~(if (platform/compiling-cljs?)
-                          'cljs.test/deftest
-                          'clojure.test/deftest)
-                        ~name
+           test-form `(t/deftest ~name
                         (let [~@session-syms->session-forms
                               ~@(sequence cat sym->query)
                               ~@(sequence cat sym->rule)]

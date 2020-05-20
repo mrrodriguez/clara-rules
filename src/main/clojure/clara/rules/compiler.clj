@@ -12,17 +12,7 @@
   (:import [clara.rules.engine
             ProductionNode
             QueryNode
-            AlphaNode
-            RootJoinNode
-            HashJoinNode
-            ExpressionJoinNode
-            NegationNode
-            NegationWithJoinFilterNode
-            TestNode
-            AccumulateNode
-            AccumulateWithJoinFilterNode
-            Accumulator
-            ISystemFact]
+            Accumulator]
            [java.beans
             PropertyDescriptor]
            [clojure.lang
@@ -31,46 +21,6 @@
 ;; Protocol for loading rules from some arbitrary source.
 (defprotocol IRuleSource
   (load-rules [source]))
-
-(sc/defschema BetaNode
-  "These nodes exist in the beta network."
-  (sc/pred (comp #{ProductionNode
-                   QueryNode
-                   RootJoinNode
-                   HashJoinNode
-                   ExpressionJoinNode
-                   NegationNode
-                   NegationWithJoinFilterNode
-                   TestNode
-                   AccumulateNode
-                   AccumulateWithJoinFilterNode}
-                 class)
-           "Some beta node type"))
-
-;; A rulebase -- essentially an immutable Rete network with a collection of
-;; alpha and beta nodes and supporting structure.
-(sc/defrecord Rulebase [;; Map of matched type to the alpha nodes that handle them.
-                        alpha-roots :- {sc/Any [AlphaNode]}
-                        ;; Root beta nodes (join, accumulate, etc.).
-                        beta-roots :- [BetaNode]
-                        ;; Productions in the rulebase.
-                        productions :- #{schema/Production}
-                        ;; Production nodes.
-                        production-nodes :- [ProductionNode]
-                        ;; Map of queries to the nodes hosting them.
-                        query-nodes :- {sc/Any QueryNode}
-                        ;; Map of id to one of the  alpha or beta nodes (join, accumulate, etc).
-                        id-to-node :- {sc/Num (sc/conditional
-                                                :activation AlphaNode
-                                                :else BetaNode)}
-                        ;; Function for sorting activation groups of rules for firing.
-                        activation-group-sort-fn
-                        ;; Function that takes a rule and returns its activation group.
-                        activation-group-fn
-                        ;; Function that takes facts and determines what alpha nodes they match.
-                        get-alphas-fn
-                        ;; A map of [node-id field-name] to function.
-                        node-expr-fn-lookup :- schema/NodeFnLookup])
 
 (defn- is-variable?
   "Returns true if the given expression is a variable (a symbol prefixed by ?)"
@@ -1897,7 +1847,7 @@
                                 :activation-group-fn activation-group-fn
                                 :get-alphas-fn get-alphas-fn
                                 :node-expr-fn-lookup exprs)
-                         strict-map->Rulebase)
+                         eng/strict-map->Rulebase)
             transport (eng/->LocalTransport)]
         (eng/assemble {:rulebase rulebase
                        :memory (eng/local-memory rulebase
@@ -1935,7 +1885,7 @@
                                   :activation-group-fn activation-group-fn#
                                   :get-alphas-fn get-alphas-fn#
                                   :node-expr-fn-lookup exprs#)
-                           strict-map->Rulebase)
+                           eng/strict-map->Rulebase)
              transport# (eng/->LocalTransport)]
          (eng/assemble {:rulebase rulebase#
                         :memory (eng/local-memory rulebase#

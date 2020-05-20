@@ -131,141 +131,6 @@
            :convert-return-fn identity}
           args)))
 
-#?(:cljs
-  (defrecord Rulebase [alpha-roots beta-roots productions queries production-nodes query-nodes id-to-node]))
-
-#?(:cljs
-  (defn- create-get-alphas-fn
-    "Returns a function that given a sequence of facts,
-    returns a map associating alpha nodes with the facts they accept."
-    [fact-type-fn ancestors-fn merged-rules]
-
-    ;; We preserve a map of fact types to alpha nodes for efficiency,
-    ;; effectively memoizing this operation.
-    (let [alpha-map (atom {})
-          wrapped-fact-type-fn (if (= fact-type-fn type)
-                                 type
-                                 (fn [fact]
-                                   (if (isa? (type fact) :clara.rules.engine/system-type)
-                                     ;; Internal system types always use ClojureScript's type mechanism.
-                                     (type fact)
-                                     ;; All other types defer to the provided function.
-                                     (fact-type-fn fact))))
-          wrapped-ancestors-fn (fn [fact-type]
-                                 (if (isa? fact-type :clara.rules.engine/system-type)
-                                   ;; Exclude system types from having ancestors for now
-                                   ;; since none of our use-cases require them.  If this changes
-                                   ;; we may need to define a custom hierarchy for them.
-                                   #{}
-                                   (ancestors-fn fact-type)))]
-      (fn [facts]
-        (for [[fact-type facts] (platform/tuned-group-by wrapped-fact-type-fn facts)]
-
-          (if-let [alpha-nodes (get @alpha-map fact-type)]
-
-            ;; If the matching alpha nodes are cached, simply return them.
-            [alpha-nodes facts]
-
-            ;; The alpha nodes weren't cached for the type, so get them now.
-            (let [ancestors (conj (wrapped-ancestors-fn fact-type) fact-type)
-
-                  ;; Get all alpha nodes for all ancestors.
-                  new-nodes (distinct
-                             (reduce
-                              (fn [coll ancestor]
-                                (concat
-                                 coll
-                                 (get-in merged-rules [:alpha-roots ancestor])))
-                              []
-                              ancestors))]
-
-              (swap! alpha-map assoc fact-type new-nodes)
-              [new-nodes facts])))))))
-
-#?(:cljs
-  (defn- mk-rulebase
-    [beta-roots alpha-fns productions]
-
-      (let [beta-nodes (for [root beta-roots
-                             node (tree-seq :children :children root)]
-                         node)
-
-            production-nodes (for [node beta-nodes
-                                   :when (= eng/ProductionNode (type node))]
-                               node)
-
-            query-nodes (for [node beta-nodes
-                              :when (= eng/QueryNode (type node))]
-                          node)
-
-            query-map (into {} (for [query-node query-nodes
-
-                                     ;; Queries can be looked up by reference or by name;
-                                     entry [[(:query query-node) query-node]
-                                            [(:name (:query query-node)) query-node]]]
-                                 entry))
-
-            ;; Map of node ids to beta nodes.
-            id-to-node (into {} (for [node beta-nodes]
-                                  [(:id node) node]))
-
-            ;; type, alpha node tuples.
-            alpha-nodes (for [{:keys [id type alpha-fn children env]} alpha-fns
-                              :let [beta-children (map id-to-node children)]]
-                          [type (eng/->AlphaNode id env beta-children alpha-fn type)])
-
-            ;; Merge the alpha nodes into a multi-map
-            alpha-map (reduce
-                       (fn [alpha-map [type alpha-node]]
-                         (update-in alpha-map [type] conj alpha-node))
-                       {}
-                       alpha-nodes)]
-
-        (map->Rulebase
-         {:alpha-roots alpha-map
-          :beta-roots beta-roots
-          :productions (filter :rhs productions)
-          :queries (remove :rhs productions)
-          :production-nodes production-nodes
-          :query-nodes query-map
-          :id-to-node id-to-node}))))
-
-
-#?(:cljs
-   (defn assemble-session
-     "This is used by tools to create a session; most users won't use this function."
-     [beta-roots alpha-fns productions options]
-     (let [rulebase (mk-rulebase beta-roots alpha-fns productions)
-           transport (eng/->LocalTransport)
-
-           ;; The fact-type uses Clojure's type function unless overridden.
-           fact-type-fn (or (get options :fact-type-fn)
-                            type)
-
-           ;; The ancestors for a logical type uses Clojurescript's ancestors function unless overridden.
-           ancestors-fn (or (get options :ancestors-fn)
-                            ancestors)
-
-           ;; Create a function that groups a sequence of facts by the collection
-           ;; of alpha nodes they target.
-           ;; We cache an alpha-map for facts of a given type to avoid computing
-           ;; them for every fact entered.
-           get-alphas-fn (create-get-alphas-fn fact-type-fn ancestors-fn rulebase)
-
-           activation-group-sort-fn (eng/options->activation-group-sort-fn options)
-
-           activation-group-fn (eng/options->activation-group-fn options)
-
-           listener (if-let [listeners (:listeners options)]
-                      (l/delegating-listener listeners)
-                      l/default-listener)]
-
-       (eng/->LocalSession rulebase
-                           (eng/local-memory rulebase transport activation-group-sort-fn activation-group-fn get-alphas-fn)
-                           transport
-                           listener
-                           get-alphas-fn
-                           []))))
 #?(:clj
    (defn safe-resolve
      "Attempts to resolve symbol `sym`. Returns the result of `resolve` unless an exception is
@@ -431,8 +296,6 @@
 
 See the [rule authoring documentation](http://www.clara-rules.org/docs/rules/) for details."
     [name & body]
-    ;;if (platform/compiling-cljs?)
-    ;;`(clara.macros/defrule ~name ~@body)
     (let [doc (if (string? (first body)) (first body) nil)]
       `(def ~(vary-meta name assoc :rule true :doc doc)
          ~(dsl/build-rule name body (meta &form))))))
@@ -449,8 +312,6 @@ parameters would look like this:
 
 See the [query authoring documentation](http://www.clara-rules.org/docs/queries/) for details."
     [name & body]
-    ;;if (platform/compiling-cljs?)
-    ;;`(clara.macros/defquery ~name ~@body)
     (let [doc (if (string? (first body)) (first body) nil)
           binding (if doc (second body) (first body))
           definition (if doc (drop 2 body) (rest body) )]
@@ -465,8 +326,6 @@ See the [query authoring documentation](http://www.clara-rules.org/docs/queries/
       reload via the REPL or mechanism such as figwheel. Place (clear-ns-productions!) at the top of any namespace
       defining rules/queries to ensure the cache is cleared properly."
      []
-     ;;if (platform/compiling-cljs?)
-     ;;`(clara.macros/clear-ns-productions!)
      (let [production-syms (->> (ns-interns *ns*)
                                 (filter (comp var? second))
                                 (filter (comp (some-fn :rule :query :production-seq) meta second)) ; Filter down to rules, queries, and seqs of both.
