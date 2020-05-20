@@ -1,4 +1,4 @@
-(ns clara.long-running-tests
+(ns clara.performance.long-running-tests
   (:require [clojure.test :refer :all]
             [clara.rules.compiler :as com]
             [schema.core :as sc]))

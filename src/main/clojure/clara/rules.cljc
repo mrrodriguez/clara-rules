@@ -266,17 +266,25 @@
                            listener
                            get-alphas-fn
                            []))))
+#?(:clj
+   (defn safe-resolve
+     "Attempts to resolve symbol `sym`. Returns the result of `resolve` unless an exception is
+  thrown, in which case returns nil."
+     [sym]
+     (try
+       (resolve sym)
+       (catch Exception e
+         nil))))
 
 #?(:clj
-   (defn resolve-symbol-rule-source [sym]
-     ;; Find the rules and queries in the namespace, shred them,
-     ;; and compile them into a rule base.
-     (if (namespace sym)
-       ;; The symbol is qualified, so load rules in the qualified symbol.
-       (let [resolved (resolve sym)]
-         (when (nil? resolved)
-           (throw (ex-info (str "Unable to resolve rule source: " sym) {:sym sym})))
-
+   (defn resolve-symbol-rule-source
+     "Find the rules and queries in the namespace, shred them, and compile them into a rule base."
+     [sym]
+     (let [resolved (safe-resolve sym)]
+       (cond
+         ;; The symbol resolves to something, so it doesn't represent a namespace. Try to load rules
+         ;; from what it resolves to.
+         (some? resolved)
          (cond
            ;; The symbol references a rule or query, so just return it
            (or (:query (meta resolved))
@@ -286,21 +294,43 @@
            (sequential? @resolved) @resolved
 
            :default
-           (throw (ex-info (str "The source referenced by " sym " is not valid.") {:sym sym} ))))
+           (throw (ex-info (str "The source referenced by " sym " is not valid.") {:sym sym} )))
 
-       ;; The symbol is not qualified, so treat it as a namespace.
-       (->> (ns-interns sym)
-            (vals)                      ; Get the references in the namespace.
-            (filter var?)
-            (filter (comp (some-fn :rule :query :production-seq) meta)) ; Filter down to rules, queries, and seqs of both.
-            ;; If definitions are created dynamically (i.e. are not reflected in an actual code file)
-            ;; it is possible that they won't have :line metadata, so we have a default of 0.
-            (sort (fn [v1 v2]
-                    (compare (or (:line (meta v1)) 0)
-                             (or (:line (meta v2)) 0))))
-            (mapcat #(if (:production-seq (meta %))
-                       (deref %)
-                       [(deref %)]))))))
+         ;; The symbol represents a namespace, so load rules from there.
+         (and (not (namespace sym))
+              (find-ns sym))
+         (->> (ns-interns sym)
+              (vals)                    ; Get the references in the namespace.
+              (filter var?)
+              (filter (comp (some-fn :rule :query :production-seq) meta)) ; Filter down to rules, queries, and seqs of both.
+              ;; If definitions are created dynamically (i.e. are not reflected in an actual code file)
+              ;; it is possible that they won't have :line metadata, so we have a default of 0.
+              (sort (fn [v1 v2]
+                      (compare (or (:line (meta v1)) 0)
+                               (or (:line (meta v2)) 0))))
+              (mapcat #(if (:production-seq (meta %))
+                         (deref %)
+                         [(deref %)])))
+         ;; Failure.
+         :else
+         (throw (ex-info (str "Unable to resolve rule source: " sym)
+                         {:sym sym}))))))
+
+#?(:clj
+   (defn resolve-object-rule-source
+     "If `o` is a non-map collection that contains symbols, those symbols are resolved via
+  `resolve-symbol-rule-source` and replaced with what they resolved to. Otherwise, `o` is directly
+  returned."
+     [o]
+     ;; Try to find any sort of non-map collection, such as sequences, vectors, sets, etc.
+     (if (and (not (map? o))
+              (coll? o))
+       (into (empty o)
+             (mapcat #(if (symbol? %)
+                        (resolve-symbol-rule-source %)
+                        [%]))
+             o)
+       o)))
 
 #?(:clj
    (extend-protocol com/IRuleSource
@@ -309,12 +339,7 @@
        (resolve-symbol-rule-source sym))
      java.lang.Object
      (load-rules [o]
-       (if (and (not (map? o))
-                (coll? o))
-         (into (empty o)
-               (mapcat com/load-rules)
-               o)
-         o))))
+       (resolve-object-rule-source o))))
 
 #?(:clj
   (defmacro mk-session
@@ -360,23 +385,35 @@
 
 #?(:clj
    (defmacro defsession
-     "Creates a sesson given a list of sources and keyword-style options, which are typically Clojure namespaces.
+     "Creates a sesson given a list of sources and keyword-style options, which are typically
+     Clojure namespaces.
+
+  NB: This is intended for use in CLJS, where the compilation model is more restrictive in that all
+  session compilation must occur at compile-time within the CLJ environment. It is not recommended
+  to use `defsession` when targetting CLJ. Instead use `mk-session`.
 
     Typical usage would be like this, with a session defined as a var:
 
     (defsession my-session 'example.namespace)
 
-    That var contains an immutable session that then can be used as a starting point to create sessions with
-    caller-provided data. Since the session itself is immutable, it can be safely used from multiple threads
-    and will not be modified by callers. So a user might grab it, insert facts, and otherwise
-    use it as follows:
+    That var contains an immutable session that then can be used as a starting point to create
+  sessions with caller-provided data. Since the session itself is immutable, it can be safely used
+  from multiple threads and will not be modified by callers. So a user might grab it, insert facts,
+  and otherwise use it as follows:
 
     (-> my-session
-     (insert (->Temperature 23))
-     (fire-rules))"
+       (insert (->Temperature 23))
+       (fire-rules))
+  "
      [name & sources-and-options]
-     (let [s (com/mk-session (vec sources-and-options))]
-       `(def ~name ~s))))
+     (let [sources-and-options (vec sources-and-options)]
+       (if (platform/compiling-cljs?)
+         ;; CLJS needs to compile the entire session at compile-time. This will be more restrictive
+         ;; than CLJ.
+         (let [s (com/mk-session sources-and-options)]
+           `(def ~name ~s))
+         ;; CLJ waits until runtime.
+         `(def ~name (com/mk-session '~sources-and-options))))))
 
 #?(:clj
   (defmacro defrule

@@ -1892,12 +1892,12 @@
             activation-group-fn (eng/options->activation-group-fn options)
 
             get-alphas-fn (eng/create-get-alphas-fn fact-type-fn ancestors-fn (:alpha-roots network))
-            rulebase (assoc network
-                            {:activation-group-sort-fn activation-group-sort-fn
-                             :activation-group-fn activation-group-fn
-                             :get-alphas-fn get-alphas-fn
-                             :node-expr-fn-lookup exprs}
-                            strict-map->Rulebase)
+            rulebase (-> network
+                         (assoc :activation-group-sort-fn activation-group-sort-fn
+                                :activation-group-fn activation-group-fn
+                                :get-alphas-fn get-alphas-fn
+                                :node-expr-fn-lookup exprs)
+                         strict-map->Rulebase)
             transport (eng/->LocalTransport)]
         (eng/assemble {:rulebase rulebase
                        :memory (eng/local-memory rulebase
@@ -1930,12 +1930,12 @@
              network# '~network
              exprs# '~exprs
              get-alphas-fn# (eng/create-get-alphas-fn fact-type-fn# ancestors-fn# (:alpha-roots network#))
-             rulebase# (assoc network#
-                              {:activation-group-sort-fn activation-group-sort-fn#
-                               :activation-group-fn activation-group-fn#
-                               :get-alphas-fn get-alphas-fn#
-                               :node-expr-fn-lookup exprs#}
-                              strict-map->Rulebase)
+             rulebase# (-> network#
+                           (assoc :activation-group-sort-fn activation-group-sort-fn#
+                                  :activation-group-fn activation-group-fn#
+                                  :get-alphas-fn get-alphas-fn#
+                                  :node-expr-fn-lookup exprs#)
+                           strict-map->Rulebase)
              transport# (eng/->LocalTransport)]
          (eng/assemble {:rulebase rulebase#
                         :memory (eng/local-memory rulebase#
@@ -1961,11 +1961,15 @@
   ([sources-and-options]
    (let [sources (take-while (complement keyword?) sources-and-options)
          options (apply hash-map (drop-while (complement keyword?) sources-and-options))
+         sp (fn [x]
+             (sc.api/spy x)
+             x)
          productions (->> sources
                           ;; Load rules from the source, or just use the input as a seq.
-                          (mapcat #(if (satisfies? IRuleSource %)
-                                     (load-rules %)
-                                     %))
+                          (mapcat (fn [s]
+                                    (if (satisfies? IRuleSource s)
+                                      (load-rules s)
+                                      s)))
                           add-production-load-order
                           ;; Ensure that we choose the earliest occurrence of a rule for the purpose of rule order.
                           ;; There are Clojure core functions for distinctness, of course, but none of them seem to guarantee
