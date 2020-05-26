@@ -1494,10 +1494,13 @@
       ;; We create an accumulator that accepts the environment for the beta node
       ;; into its context, hence the function with the given environment.
       (let [compiled-node (compiled-expr-fn id :accum-expr)
-            compiled-accum (compiled-node (:env beta-node))]
+            compiled-accum (if (platform/compiling-cljs?)
+                             `(~compiled-node (:env ~beta-node))
+                             (compiled-node (:env beta-node)))]
 
         ;; Ensure the compiled accumulator has the expected structure
-        (when (not (instance? Accumulator compiled-accum))
+        (when (and (not (platform/compiling-cljs?))
+                   (not (instance? Accumulator compiled-accum)))
           (throw (IllegalArgumentException. (str (:accumulator beta-node) " is not a valid accumulator."))))
 
         ;; If a non-equality unification is in place, compile the predicate and use
@@ -1877,8 +1880,8 @@
              ;; The returned salience will be a tuple of the form [rule-salience internal-salience],
              ;; where internal-salience is considered after the rule-salience and is assigned automatically by the compiler.
              activation-group-fn# (eng/options->activation-group-fn options#)
-             network# '~network
-             exprs# '~exprs
+             network# ~network
+             exprs# ~exprs
              get-alphas-fn# (eng/create-get-alphas-fn fact-type-fn# ancestors-fn# (:alpha-roots network#))
              rulebase# (-> network#
                            (assoc :activation-group-sort-fn activation-group-sort-fn#

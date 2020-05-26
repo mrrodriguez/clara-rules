@@ -23,19 +23,27 @@
   :source-paths ["src/main/clojure"]
   :test-paths ["src/test/clojure" "src/test/cljsenv"]
   :java-source-paths ["src/main/java"]
-  :profiles {:clean-js {:clean-targets ^{:protect false} [~cljs-compile-target]}
-             :cljs-common {
-                           ;; Only needed for cljs 1.9 compat - fixed in newer versions, but we want
-                           ;; to test with an older baseline in this project for now.
-                           :dependencies [[javax.xml.bind/jaxb-api "2.4.0-b180830.0359"]
-                                          [com.bhauman/figwheel-main "0.2.3"]]
-                           :test-commands {"phantom-simple" ["phantomjs"
-                                                             "src/test/js/runner.js"
-                                                             "src/test/html/simple.html"]
+  :profiles {:recent-clj {:dependencies [[org.clojure/clojure "1.10.1"]
+                                         [org.clojure/clojurescript "1.10.520"]]}
+             :clean-js {:clean-targets ^{:protect false} [~cljs-compile-target]}
+             :cljs-common [:recent-clj
+                           { ;; Only needed for cljs 1.9 compat - fixed in newer versions, but we want
+                            ;; to test with an older baseline in this project for now.
+                            :dependencies [[javax.xml.bind/jaxb-api "2.4.0-b180830.0359"]
+                                           ;; Same as emacs cider-version 0.25.x
+                                           ;; If this interferes with `cider`, comment it out. it is
+                                           ;; mostly here to debug more difficult figwheel
+                                           ;; compilation issues via the figwheel API directly.
+                                           [cider/piggieback "0.4.2"]
+                                           [com.bhauman/figwheel-main "0.2.6"]]
+                            :test-commands {"phantom-simple" ["phantomjs"
+                                                              "src/test/js/runner.js"
+                                                              "src/test/html/simple.html"]
 
-                                           "phantom-advanced" ["phantomjs"
-                                                               "src/test/js/runner.js"
-                                                               "src/test/html/advanced.html"]}}
+                                            "phantom-advanced" ["phantomjs"
+                                                                "src/test/js/runner.js"
+                                                                "src/test/html/advanced.html"]}}]
+             :provided {:dependencies [[org.clojure/clojurescript "1.9.946"]]}
              :cljs-dev [:cljs-common
                         {:source-paths ["src/test/clojure"]
                          :resource-paths ["resources" "dev-resources"]}]
@@ -48,10 +56,7 @@
                     :java-source-paths ["src/test/java"]
                     :global-vars {*warn-on-reflection* true}}]
              :dev-cmd-line [:dev
-                            {:dependencies [[com.bhauman/rebel-readline-cljs "0.1.4"]]}]
-             :provided {:dependencies [[org.clojure/clojurescript "1.9.946"]]}
-             :recent-clj {:dependencies [[org.clojure/clojure "1.10.1"]
-                                         [org.clojure/clojurescript "1.10.520"]]}}
+                            {:dependencies [[com.bhauman/rebel-readline-cljs "0.1.4"]]}]}
 
   :codox {:namespaces [clara.rules clara.rules.dsl clara.rules.accumulators
                        clara.rules.listener clara.rules.durability

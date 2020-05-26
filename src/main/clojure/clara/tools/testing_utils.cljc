@@ -5,6 +5,7 @@
   is functionality needed to test the rules engine itself."
   (:require [clara.rules.update-cache.core :as uc]
             [clara.rules.platform :as platform]
+            [clara.rules]
             #?(:clj [clara.rules.update-cache.cancelling :as ca])
             #?(:clj [clara.rules.compiler :as com])
             #?(:clj [clara.rules.dsl :as dsl])
@@ -13,33 +14,40 @@
 
 #?(:clj
    (defmacro def-rules-test
-     "This macro allows creation of rules, queries, and sessions from arbitrary combinations of rules
-      and queries in a setup map without the necessity of creating a namespace or defining a session
-      using defsession in both Clojure and ClojureScript.  The first argument is the name of the test, 
-      and the second argument is a map with entries :rules, :queries, and :sessions.  For example usage see
-      clara.test-testing-utils.  Note that sessions currently can only contain rules and queries defined
-      in the setup map; supporting other rule sources such as namespaces and defrule/defquery may be possible
-      in the future.
-
-      Namespaces consuming this macro are expected to require clara.rules and either clojure.test or cljs.test.
-      Unfortunately, at this time we can't add inline requires for these namespace with the macroexpanded code in
-      ClojureScript; see https://anmonteiro.com/2016/10/clojurescript-require-outside-ns/ for some discussion on the 
-      subject.  However, the test namespaces consuming this will in all likelihood have these dependencies anyway
-      so this probably isn't a significant shortcoming of this macro."
+     "This macro allows creation of rules, queries, and sessions from arbitrary combinations of
+  rules and queries in a setup map without the necessity of creating a namespace or defining a
+  session using mk-session or defsession in both Clojure and ClojureScript. The first argument is
+  the name of the test, and the second argument is a map with entries :rules, :queries, and
+  :sessions. For example usage see clara.test-testing-utils. Note that sessions currently can only
+  contain rules and queries defined in the setup map; supporting other rule sources such as
+  namespaces and defrule/defquery may be possible in the future."
      [name params & forms]
      (let [sym->rule (->> params
                           :rules
                           (partition 2)
                           (into {}
                                 (map (fn [[rule-name [lhs rhs props]]]
-                                       [rule-name (assoc (dsl/parse-rule* lhs rhs props {}) :name (str rule-name))]))))
+                                       [rule-name (assoc (dsl/parse-rule* lhs
+                                                                          rhs
+                                                                          props
+                                                                          {}
+                                                                          {}
+                                                                          (when (platform/compiling-cljs?)
+                                                                            {:unquoted-forms? true}))
+                                                         :name (str rule-name))]))))
 
            sym->query (->> params
                            :queries
                            (partition 2)
                            (into {}
                                  (map (fn [[query-name [params lhs]]]
-                                        [query-name (assoc (dsl/parse-query* params lhs {}) :name (str query-name))]))))
+                                        [query-name (assoc (dsl/parse-query* params
+                                                                             lhs
+                                                                             {}
+                                                                             {}
+                                                                             (when (platform/compiling-cljs?)
+                                                                               {:unquoted-forms? true}))
+                                                           :name (str query-name))]))))
 
            production-syms->productions (fn [p-syms]
                                           (map (fn [s]

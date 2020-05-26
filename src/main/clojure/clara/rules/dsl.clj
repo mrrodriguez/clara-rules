@@ -226,8 +226,11 @@
           (qualify-meta env)))
    form))
 
+(defn- quote-form [form]
+  (list 'quote form))
+
 (defmacro local-syms []
-  (mapv #(list 'quote %) (keys &env)))
+  (mapv quote-form (keys &env)))
 
 (defn destructuring-sym? [sym]
   (or (re-matches #"vec__\d+" (name sym))
@@ -244,16 +247,23 @@
   ([lhs rhs properties env]
    (parse-rule* lhs rhs properties env {}))
   ([lhs rhs properties env rule-meta]
+   (parse-rule* lhs rhs properties env rule-meta {}))
+  ([lhs rhs properties env rule-meta {:keys [unquoted-forms?]}]
    (let [conditions (into [] (for [expr lhs]
                                (parse-expression expr rule-meta)))
 
-         rule {:ns-name (list 'quote (ns-name (if (platform/compiling-cljs?) (com/cljs-ns) *ns*)))
-               :lhs     (list 'quote
-                              (mapv #(resolve-vars % (destructure-syms %))
-                                    conditions))
-               :rhs     (list 'quote
-                              (vary-meta rhs
-                                         assoc :file *file*))}
+         rule {:ns-name (ns-name (if (platform/compiling-cljs?) (com/cljs-ns) *ns*))
+               :lhs (mapv #(resolve-vars % (destructure-syms %))
+                          conditions)
+               :rhs (vary-meta rhs
+                               assoc :file *file*)}
+
+         rule (if unquoted-forms?
+                rule
+                (-> rule
+                    (update :ns-name quote-form)
+                    (update :lhs quote-form)
+                    (update :rhs quote-form)))
 
          symbols (set (filter symbol? (com/flatten-expression (concat lhs rhs))))
          matching-env (into {} (for [sym (keys env)
@@ -273,12 +283,18 @@
   ([params lhs env]
    (parse-query* params lhs env {}))
   ([params lhs env query-meta]
+   (parse-query* params lhs env query-meta {}))
+  ([params lhs env query-meta {:keys [unquoted-forms?]}]
    (let [conditions (into [] (for [expr lhs]
                                (parse-expression expr query-meta)))
 
-         query {:lhs (list 'quote (mapv #(resolve-vars % (destructure-syms %))
-                                        conditions))
+         query {:lhs (mapv #(resolve-vars % (destructure-syms %))
+                           conditions)
                 :params (set params)}
+         query (if unquoted-forms?
+                 query
+                 (-> query
+                     (update :lhs quote-form)))
 
          symbols (set (filter symbol? (com/flatten-expression lhs)))
          matching-env (into {}
