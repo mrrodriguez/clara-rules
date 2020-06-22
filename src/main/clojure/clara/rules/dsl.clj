@@ -8,6 +8,7 @@
             [clara.rules.engine :as eng]
             [clara.rules.compiler :as com]
             [clara.rules.platform :as platform]
+            [clara.rules.cljs :as cljs]
             [clara.rules.schema :as schema]
             [schema.core :as sc])
   (:refer-clojure :exclude [qualified-keyword?]))
@@ -153,56 +154,61 @@
   [env sym]
   (let [env (set env)]
     (if (platform/compiling-cljs?)
-
       ;; Qualify the symbol using the CLJS analyzer.
       (if-let [resolved (and (symbol? sym)
                              (not (env sym))
-                             (com/resolve-cljs-sym (com/cljs-ns) sym))]
+                             (cljs/resolve-cljs-sym (cljs/cljs-ns) sym))]
         resolved
         sym)
-
+      ;; CLJ
       (if (and (symbol? sym)
-               (not= '.. sym) ; Skip the special .. host interop macro.
+               ;; Skip the special .. host interop macro.
+               (not= '.. sym)
                (.endsWith (name sym) "."))
 
         ;; The . suffix indicates a type constructor, so we qualify the type instead, then
         ;; re-add the . to the resolved type.
         (-> (subs (name sym)
                   0
-                  (dec (count (name sym)))) ; Get the name without the trailing dot.
-            (symbol) ; Convert it back to a symbol.
-            ^Class (resolve) ; Resolve into the type class.
-            (.getName) ; Get the qualified name.
-            (str ".") ; Re-add the dot for the constructor, which is now qualified
-            (symbol)) ; Convert back into a symbol used at compile time.
+                  ;; Get the name without the trailing dot.
+                  (dec (count (name sym))))
+            (symbol)
+            ^Class (resolve)
+            ;; Get the qualified name.
+            ;; Re-add the dot for the constructor, which is now qualified.
+            (.getName)
+            (str ".") 
+            (symbol))
 
         ;; Qualify a normal clojure symbol.
-        (if (and (symbol? sym) ; Only qualify symbols...
-                 (not (env sym))) ; not in env (env contains locals).) ; that we can resolve
-
+        ;; Only qualify symbols that are not in env (env contains locals).), ie that can be
+        ;; resolved.
+        (if (and (symbol? sym)
+                 (not (env sym)))
           (cond
-           ;; If it's a Java class, simply qualify it.
-           (instance? Class (resolve sym))
-           (symbol (.getName ^Class (resolve sym)))
+            ;; If it's a Java class, simply qualify it.
+            (instance? Class (resolve sym))
+            (symbol (.getName ^Class (resolve sym)))
 
-           ;; Don't qualify clojure.core for portability, since CLJS uses a different namespace.
-           (and (resolve sym)
-                (not (= "clojure.core"
-                        (str (ns-name (:ns (meta (resolve sym)))))))
-                (name sym))
-           (symbol (str (ns-name (:ns (meta (resolve sym))))) (name sym))
+            ;; Don't qualify clojure.core for portability, since CLJS uses a different namespace.
+            (and (resolve sym)
+                 (not (= "clojure.core"
+                         (str (ns-name (:ns (meta (resolve sym)))))))
+                 (name sym))
+            (symbol (str (ns-name (:ns (meta (resolve sym))))) (name sym))
 
-           ;; See if it's a static method call and qualify it.
-           (and (namespace sym)
-                (not (resolve sym))
-                (instance? Class (resolve (symbol (namespace sym))))) ; The namespace portion is the class name we try to resolve.
-           (symbol (.getName ^Class (resolve (symbol (namespace sym))))
-                   (name sym))
+            ;; See if it's a static method call and qualify it.
+            (and (namespace sym)
+                 (not (resolve sym))
+                 ;; The namespace portion is the class name we try to resolve.
+                 (instance? Class (resolve (symbol (namespace sym))))) 
+            (symbol (.getName ^Class (resolve (symbol (namespace sym))))
+                    (name sym))
 
-           ;; Finally, just return the symbol unchanged if it doesn't match anything above,
-           ;; assuming it's a local parameter or variable.n
-           :default
-           sym)
+            ;; Finally, just return the symbol unchanged if it doesn't match anything above,
+            ;; assuming it's a local parameter or variable.n
+            :default
+            sym)
 
           sym)))))
 
@@ -252,7 +258,7 @@
    (let [conditions (into [] (for [expr lhs]
                                (parse-expression expr rule-meta)))
 
-         rule {:ns-name (ns-name (if (platform/compiling-cljs?) (com/cljs-ns) *ns*))
+         rule {:ns-name (ns-name *ns*)
                :lhs (mapv #(resolve-vars % (destructure-syms %))
                           conditions)
                :rhs (vary-meta rhs
@@ -321,7 +327,6 @@
   [prod-name]
   (cond
     (qualified-keyword? prod-name) prod-name
-    (platform/compiling-cljs?) (str (name (com/cljs-ns)) "/" (name prod-name))
     :else (str (name (ns-name *ns*)) "/" (name prod-name))))
 
 (defn build-rule

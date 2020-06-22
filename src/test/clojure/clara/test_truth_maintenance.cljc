@@ -1,56 +1,39 @@
-#?(:clj
-   (ns clara.test-truth-maintenance
-     (:require [clara.tools.testing-utils :refer [def-rules-test] :as tu]
-               [clara.rules :refer [fire-rules
-                                    insert
-                                    insert-all
-                                    insert!
-                                    insert-unconditional!
-                                    insert-all-unconditional!
-                                    retract
-                                    retract!
-                                    query]]
-               [clara.rules.testfacts :refer [->Temperature ->Cold ->WindSpeed
-                                              ->TemperatureHistory ->LousyWeather
-                                              ->ColdAndWindy ->First ->Second ->Third]]
-               [clojure.test :refer [is deftest run-tests testing use-fixtures]]
-               [clara.rules.accumulators :as acc]
-               [schema.test :as st])
-     (:import [clara.rules.testfacts
-               Temperature
-               TemperatureHistory
-               Cold
-               ColdAndWindy
-               WindSpeed
-               LousyWeather
-               First
-               Second
-               Third]))
-
-   :cljs
-   (ns clara.test-truth-maintenance
-     (:require [clara.rules :refer [fire-rules
-                                    insert
-                                    insert!
-                                    insert-unconditional!
-                                    insert-all-unconditional!
-                                    insert-all
-                                    retract
-                                    retract!
-                                    query]]
-               [clara.rules.accumulators :as acc]
-               [clara.rules.testfacts :refer [->Temperature Temperature
-                                              ->TemperatureHistory TemperatureHistory
-                                              ->Cold Cold
-                                              ->ColdAndWindy ColdAndWindy
-                                              ->WindSpeed WindSpeed
-                                              ->LousyWeather LousyWeather
-                                              ->First First
-                                              ->Second Second
-                                              ->Third Third]]
-               [schema.test :as st])
-     (:require-macros [clara.tools.testing-utils :refer [def-rules-test]]
-                      [cljs.test :refer [is deftest run-tests testing use-fixtures]])))
+(ns clara.test-truth-maintenance
+  (:require [clara.tools.testing-utils :refer [def-rules-test] :as tu]
+            [clara.rules :refer [fire-rules
+                                 insert
+                                 insert-all
+                                 insert!
+                                 insert-unconditional!
+                                 insert-all-unconditional!
+                                 retract
+                                 retract!
+                                 query]]
+            [clara.rules.testfacts :refer [->Temperature ->Cold ->WindSpeed
+                                           ->TemperatureHistory ->LousyWeather
+                                           ->ColdAndWindy ->First ->Second ->Third
+                                           #?@(:cljs [Temperature
+                                                      TemperatureHistory
+                                                      Cold
+                                                      ColdAndWindy
+                                                      WindSpeed
+                                                      LousyWeather
+                                                      First
+                                                      Second
+                                                      Third])]]
+            [clojure.test :refer [is deftest run-tests testing use-fixtures]]
+            [clara.rules.accumulators :as acc]
+            [schema.test :as st])
+  #?(:clj (:import [clara.rules.testfacts
+                    Temperature
+                    TemperatureHistory
+                    Cold
+                    ColdAndWindy
+                    WindSpeed
+                    LousyWeather
+                    First
+                    Second
+                    Third])))
 
 (use-fixtures :once st/validate-schemas #?(:clj tu/opts-fixture))
 

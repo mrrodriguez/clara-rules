@@ -1,6 +1,7 @@
 (ns clara.rules
   "Forward-chaining rules for Clojure. The primary API is in this namespace."
   (:require [clara.rules.engine :as eng]
+            [clara.rules.cljs :as cljs]
             [schema.core :as s]
             [clara.rules.platform :as platform]
             #?(:cljs [clara.rules.listener :as l])
@@ -136,16 +137,22 @@
      "Attempts to resolve symbol `sym`. Returns the result of `resolve` unless an exception is
   thrown, in which case returns nil."
      [sym]
-     (try
-       (resolve sym)
-       (catch Exception e
-         nil))))
+     (if-not (platform/compiling-cljs?)
+       (try
+         (resolve sym)
+         (catch Exception e
+           nil))
+       ;; TODO: need the value not the symbol.
+       (cljs/resolve-cljs-sym (cljs/cljs-ns) sym))))
 
 #?(:clj
    (defn resolve-symbol-rule-source
      "Find the rules and queries in the namespace, shred them, and compile them into a rule base."
      [sym]
-     (let [resolved (safe-resolve sym)]
+     (let [cur-ns (ns-name *ns*)
+           cur-cljs-ns (cljs/cljs-ns)
+           resolved (safe-resolve sym)]
+       (sc.api/spy sym)
        (cond
          ;; The symbol resolves to something, so it doesn't represent a namespace. Try to load rules
          ;; from what it resolves to.
@@ -296,9 +303,12 @@
 
 See the [rule authoring documentation](http://www.clara-rules.org/docs/rules/) for details."
     [name & body]
-    (let [doc (if (string? (first body)) (first body) nil)]
-      `(def ~(vary-meta name assoc :rule true :doc doc)
-         ~(dsl/build-rule name body (meta &form))))))
+    (let [doc (if (string? (first body)) (first body) nil)
+          def-name (vary-meta name assoc :rule true :doc doc)
+          rule (dsl/build-rule name body (meta &form))]
+      (when (platform/compiling-cljs?)
+        (def def-name rule))
+      `(def ~def-name ~rule))))
 
 #?(:clj
   (defmacro defquery
@@ -313,10 +323,13 @@ parameters would look like this:
 See the [query authoring documentation](http://www.clara-rules.org/docs/queries/) for details."
     [name & body]
     (let [doc (if (string? (first body)) (first body) nil)
+          def-name (vary-meta name assoc :query true :doc doc)
           binding (if doc (second body) (first body))
-          definition (if doc (drop 2 body) (rest body) )]
-      `(def ~(vary-meta name assoc :query true :doc doc)
-         ~(dsl/build-query name body (meta &form))))))
+          definition (if doc (drop 2 body) (rest body))
+          query (dsl/build-query name body (meta &form))]
+      (when (platform/compiling-cljs?)
+        (def def-name query))
+      `(def ~def-name ~query))))
 
 #?(:clj
    (defmacro clear-ns-productions!

@@ -4,6 +4,7 @@
    Most users should use only the clara.rules namespace."
   (:require [clara.rules.engine :as eng]
             [clara.rules.schema :as schema]
+            [clara.rules.cljs :as cljs]
             [clara.rules.platform :as platform]
             [clojure.set :as set]
             [clojure.string :as string]
@@ -34,49 +35,13 @@
   `defrecords`.  Work around by supplying our own which does."
   (clojure.reflect.JavaReflector. (clojure.lang.RT/makeClassLoader)))
 
-(defn get-namespace-info
-  "Get metadata about the given namespace."
-  [namespace]
-  (when-let [n (and (platform/compiling-cljs?) (find-ns 'cljs.env))]
-    (when-let [v (ns-resolve n '*compiler*)]
-      (get-in @@v [ :cljs.analyzer/namespaces namespace]))))
-
-(defn cljs-ns
-  "Returns the ClojureScript namespace being compiled during Clojurescript compilation."
-  []
-  (if (platform/compiling-cljs?)
-    (-> 'cljs.analyzer (find-ns) (ns-resolve '*cljs-ns*) deref)
-    nil))
-
-(defn resolve-cljs-sym
-  "Resolves a ClojureScript symbol in the given namespace."
-  [ns-sym sym]
-  (let [ns-info (get-namespace-info ns-sym)]
-    (if (namespace sym)
-
-      ;; Symbol qualified by a namespace, so look it up in the requires info.
-      (if-let [source-ns (get-in ns-info [:requires (symbol (namespace sym))])]
-        (symbol (name source-ns) (name sym))
-        ;; Not in the requires block, so assume the qualified name is a refers and simply return the symbol.
-        sym)
-
-      ;; Symbol is unqualified, so check in the uses block.
-      (if-let [source-ns (get-in ns-info [:uses sym])]
-        (symbol (name source-ns) (name sym))
-
-        ;; Symbol not found in eiher block, so attempt to retrieve it from
-        ;; the current namespace.
-        (if (get-in (get-namespace-info ns-sym) [:defs sym])
-          (symbol (name ns-sym) (name sym))
-          nil)))))
-
 (defn- get-cljs-accessors
   "Returns accessors for ClojureScript. WARNING: this touches
   ClojureScript implementation details that may change."
   [sym]
-  (let [resolved (resolve-cljs-sym (cljs-ns) sym)
+  (let [resolved (cljs/resolve-cljs-sym (cljs/cljs-ns) sym)
         constructor (symbol (str "->" (name resolved)))
-        namespace-info (get-namespace-info (symbol (namespace resolved)))
+        namespace-info (cljs/get-namespace-info (symbol (namespace resolved)))
         constructor-info (get-in namespace-info [:defs constructor])]
 
     (if constructor-info
@@ -84,7 +49,6 @@
             (for [field (first (:method-params constructor-info))]
               [field (keyword (name field))]))
       [])))
-
 
 (defn- get-field-accessors
   "Given a clojure.lang.IRecord subclass, returns a map of field name to a
@@ -1778,7 +1742,7 @@
   "Compile the rules into a rete network and return the given session."
   [productions :- #{schema/Production}
    options :- {sc/Keyword sc/Any}]
-  (let [;; We need to put the productions in a sorted set here, instead of in mk-session, since we don't want
+  (let [ ;; We need to put the productions in a sorted set here, instead of in mk-session, since we don't want
         ;; a sorted set in the session-cache.  If we did only rule order would be used to compare set equality
         ;; for finding a cache hit, and we want to use the entire production, which a non-sorted set does.
         ;; When using a sorted set, for constant options,
@@ -1819,7 +1783,6 @@
                          [k [expr (dissoc ctx :compile-ctx)]]))
                       exprs)
                 exprs)
-
         beta-tree (compile-beta-graph beta-graph exprs)
         beta-root-ids (-> beta-graph :forward-edges (get 0)) ; 0 is the id of the virtual root node.
         beta-roots (vals (select-keys beta-tree beta-root-ids))
@@ -1914,9 +1877,6 @@
   ([sources-and-options]
    (let [sources (take-while (complement keyword?) sources-and-options)
          options (apply hash-map (drop-while (complement keyword?) sources-and-options))
-         sp (fn [x]
-             (sc.api/spy x)
-             x)
          productions (->> sources
                           ;; Load rules from the source, or just use the input as a seq.
                           (mapcat (fn [s]

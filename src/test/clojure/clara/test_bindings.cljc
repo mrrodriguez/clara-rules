@@ -1,45 +1,29 @@
-#?(:clj
-   (ns clara.test-bindings
-     "Tests focused on the creation of binding variables and their use
+(ns clara.test-bindings
+  "Tests focused on the creation of binding variables and their use
       in joins between rule and query condition.  Binding variables
       begin with ?."
-     (:require [clara.tools.testing-utils :refer [def-rules-test] :as tu]
-               [clara.rules :refer [fire-rules
-                                    insert
-                                    insert-all
-                                    insert!
-                                    retract
-                                    query]]
+  (:require [clara.tools.testing-utils :refer [def-rules-test] :as tu]
+            [clara.rules :refer [fire-rules
+                                 insert
+                                 insert-all
+                                 insert!
+                                 retract
+                                 query]]
 
-               [clara.rules.testfacts :refer [->Temperature ->Cold ->WindSpeed
-                                              ->ColdAndWindy]]
-               [clojure.test :refer [is deftest run-tests testing use-fixtures]]
-               [clara.rules.accumulators :as acc]
-               [schema.test :as st])
-     (:import [clara.rules.testfacts
-               Temperature
-               Cold
-               WindSpeed
-               ColdAndWindy]))
-
-   :cljs
-   (ns clara.test-bindings
-     (:require [clara.rules :refer [fire-rules
-                                    insert
-                                    insert!
-                                    insert-all
-                                    retract
-                                    query]]
-               [clara.rules.testfacts :refer [->Temperature Temperature
-                                              ->Cold Cold
-                                              ->WindSpeed WindSpeed
-                                              ->ColdAndWindy ColdAndWindy]]
-               [clara.rules.accumulators :as acc]
-               [cljs.test]
-               [schema.test :as st]
-               [clara.tools.testing-utils :as tu])
-     (:require-macros [clara.tools.testing-utils :refer [def-rules-test]]
-                      [cljs.test :refer [is deftest run-tests testing use-fixtures]])))
+            [clara.rules.testfacts :refer [->Temperature ->Cold ->WindSpeed
+                                           ->ColdAndWindy
+                                           #?@(:cljs [Temperature
+                                                      Cold
+                                                      WindSpeed
+                                                      ColdAndWindy])]]
+            [clojure.test :refer [is deftest run-tests testing use-fixtures]]
+            [clara.rules.accumulators :as acc]
+            [schema.test :as st])
+  #?(:clj (:import [clara.rules.testfacts
+                    Temperature
+                    Cold
+                    WindSpeed
+                    ColdAndWindy])))
 
 (use-fixtures :once st/validate-schemas #?(:clj tu/opts-fixture))
 (use-fixtures :each tu/side-effect-holder-fixture)
